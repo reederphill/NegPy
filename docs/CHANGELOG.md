@@ -8,10 +8,10 @@
 - Improvements to histogram & photometric curve rendering.
 - Overall performance & stability improvements.
 - Make "Pick WB" tool more predictable by averaging 8x8 area instead of sampling simple pixel.
-- Fix Linux appimage crashing on some distros.
+- Fix: Linux appimage crashing on some distros.
+- Fix: Border added via export menu being picked up by histogram calculation.
 - Fix: mouse wheel accidentally changing sliders and dropdowns when scrolling the sidebar.
-- Fix: settings from a previously edited file being applied to newly opened unedited files.
-- Fix: crash when using the Clear button to remove all files from the session.
+- Fix: Crash when using the Clear button to remove all files from the session.
 
 ## 0.12.0
 

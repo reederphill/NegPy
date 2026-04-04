@@ -85,6 +85,30 @@ class TestGPUEngine(unittest.TestCase):
     def _engine_buffers_count(self):
         return self.engine._buffers
 
+    def test_histogram_unaffected_by_border(self):
+        """Border pixels must not skew the histogram — metrics are computed on content only."""
+        from dataclasses import replace
+        from negpy.domain.models import ExportConfig
+
+        img = np.random.rand(120, 120, 3).astype(np.float32)
+        base_settings = WorkspaceConfig()
+
+        _, metrics_no_border = self.engine.process(img, base_settings)
+        hist_no_border = metrics_no_border["histogram_raw"].copy()
+
+        black_border_export = ExportConfig(export_add_border=True, export_border_size=1.0, export_border_color="#000000")
+        settings_black = replace(base_settings, export=black_border_export)
+        _, metrics_black = self.engine.process(img, settings_black)
+        hist_black = metrics_black["histogram_raw"].copy()
+
+        white_border_export = ExportConfig(export_add_border=True, export_border_size=1.0, export_border_color="#ffffff")
+        settings_white = replace(base_settings, export=white_border_export)
+        _, metrics_white = self.engine.process(img, settings_white)
+        hist_white = metrics_white["histogram_raw"].copy()
+
+        np.testing.assert_array_equal(hist_no_border, hist_black, err_msg="Black border pixels skewed the histogram")
+        np.testing.assert_array_equal(hist_no_border, hist_white, err_msg="White border pixels skewed the histogram")
+
 
 if __name__ == "__main__":
     unittest.main()

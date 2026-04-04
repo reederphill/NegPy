@@ -520,12 +520,14 @@ class GPUEngine:
 
         if not tiling_mode and readback_metrics:
             device.queue.write_buffer(self._buffers["metrics"].buffer, 0, np.zeros(1024, dtype=np.uint32))
+            # Always compute metrics on the content image (tex_toning) before any
+            # border/layout pass so that border pixels don't skew the histogram.
             self._dispatch_pass(
                 enc,
                 "metrics",
-                [(0, tex_final.view), (1, self._buffers["metrics"])],
-                tex_final.width,
-                tex_final.height,
+                [(0, tex_toning.view), (1, self._buffers["metrics"])],
+                crop_w,
+                crop_h,
             )
 
         device.queue.submit([enc.finish()])
