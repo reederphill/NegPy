@@ -1,10 +1,12 @@
+from typing import Dict
+
 import cv2
 import numpy as np
 from numba import njit  # type: ignore
-from typing import Dict
-from negpy.domain.types import ImageBuffer, LUMA_R, LUMA_G, LUMA_B
+
+from negpy.domain.types import LUMA_B, LUMA_G, LUMA_R, ImageBuffer
+from negpy.features.toning.models import PaperProfileName, PaperSubstrate
 from negpy.kernel.image.validation import ensure_image
-from negpy.features.toning.models import PaperSubstrate, PaperProfileName
 
 
 @njit(cache=True, fastmath=True)
@@ -114,14 +116,14 @@ def apply_split_toning(
     if shadow_strength > 0.0:
         s_mask = np.clip(1.0 - L / 50.0, 0.0, 1.0)
         rad = np.radians(shadow_hue)
-        lab[:, :, 1] += np.cos(rad) * 30.0 * shadow_strength * s_mask
-        lab[:, :, 2] += np.sin(rad) * 30.0 * shadow_strength * s_mask
+        lab[:, :, 1] += np.cos(rad) * 15.0 * shadow_strength * s_mask
+        lab[:, :, 2] += np.sin(rad) * 15.0 * shadow_strength * s_mask
 
     if highlight_strength > 0.0:
         h_mask = np.clip((L - 50.0) / 50.0, 0.0, 1.0)
         rad = np.radians(highlight_hue)
-        lab[:, :, 1] += np.cos(rad) * 30.0 * highlight_strength * h_mask
-        lab[:, :, 2] += np.sin(rad) * 30.0 * highlight_strength * h_mask
+        lab[:, :, 1] += np.cos(rad) * 15.0 * highlight_strength * h_mask
+        lab[:, :, 2] += np.sin(rad) * 15.0 * highlight_strength * h_mask
 
     return ensure_image(np.clip(cv2.cvtColor(lab, cv2.COLOR_LAB2RGB), 0.0, 1.0))
 

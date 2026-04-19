@@ -40,7 +40,7 @@ class ThemeConfig:
             "exposure": True,
             "geometry": True,
             "lab": True,
-            "toning": True,
+            "toning": False,
             "retouch": True,
             "icc": False,
             "export": True,

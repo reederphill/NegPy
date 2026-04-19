@@ -171,6 +171,8 @@ class ActionToolbar(QWidget):
         overflow_menu.addAction(qta.icon("fa5s.history", color=icon_color), "Reset Settings", self.session.reset_settings)
         overflow_menu.addSeparator()
         overflow_menu.addAction(qta.icon("fa5s.times-circle", color=icon_color), "Unload", self.session.remove_current_file)
+        overflow_menu.addSeparator()
+        overflow_menu.addAction(qta.icon("fa5s.keyboard", color=icon_color), "Keyboard Shortcuts  ?", self._show_shortcuts)
         self.btn_overflow.setMenu(overflow_menu)
 
         standard_buttons = [
@@ -283,6 +285,12 @@ class ActionToolbar(QWidget):
         new_config = replace(self.session.state.config, geometry=new_geo)
         self.session.update_config(new_config, persist=True)
         self.controller.request_render()
+
+    def _show_shortcuts(self) -> None:
+        from negpy.desktop.view.widgets.shortcuts_overlay import ShortcutsOverlay
+
+        dlg = ShortcutsOverlay(self.window())
+        dlg.exec()
 
     def _update_ui_state(self) -> None:
         state = self.session.state

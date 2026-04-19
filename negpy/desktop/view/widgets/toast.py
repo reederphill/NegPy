@@ -13,10 +13,10 @@ class Toast(QWidget):
         self.setWindowFlags(Qt.WindowType.SubWindow)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setContentsMargins(24, 14, 24, 14)
 
         self.label = QLabel()
-        self.label.setStyleSheet(f"color: {THEME.text_primary}; font-size: 12px; background: transparent;")
+        self.label.setStyleSheet(f"color: {THEME.text_primary}; font-size: 15px; background: transparent;")
         layout.addWidget(self.label)
 
         self.setStyleSheet(f"background-color: rgba(26, 26, 26, 235);border: 1px solid {THEME.border_color};border-radius: 4px;")
@@ -51,9 +51,8 @@ class Toast(QWidget):
         p = self.parentWidget()
         if p is None:
             return
-        margin = 24
         x = (p.width() - self.width()) // 2
-        y = p.height() - self.height() - margin
+        y = (p.height() - self.height()) // 2
         self.move(max(0, x), max(0, y))
 
     def _start_fade(self) -> None:
