@@ -883,10 +883,15 @@ class AppController(QObject):
             return
         with self.state.metrics_lock:
             metrics = dict(self.state.last_metrics)
-        buffer = metrics.get("base_positive")
+        # Prefer the ndarray pre-computed on the render thread (GPU path).
+        # Never call readback() here: cleanup() on the render thread can destroy
+        # the staging buffer concurrently, causing a GPU validation crash.
+        buffer = metrics.get("base_positive_np")
+        if buffer is None:
+            buffer = metrics.get("base_positive")
 
         if isinstance(buffer, GPUTexture):
-            buffer = buffer.readback()
+            return  # pre-readback failed or not available; skip safely
 
         if buffer is not None and not isinstance(buffer, np.ndarray):
             buffer = metrics.get("analysis_buffer")
