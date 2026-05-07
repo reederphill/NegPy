@@ -529,9 +529,14 @@ class AppController(QObject):
         if not self.state.uploaded_files:
             return
 
+        active_files = [f for f in self.state.uploaded_files if f["hash"] not in self.state.excluded_file_hashes]
+        if not active_files:
+            return
+
         self.set_status("Starting Batch Normalization...")
+        self.normalization_progress.emit(0, len(active_files))
         task = NormalizationTask(
-            files=self.state.uploaded_files.copy(),
+            files=active_files,
             workspace_color_space=self.state.workspace_color_space,
         )
         self.normalization_requested.emit(task)
@@ -545,9 +550,10 @@ class AppController(QObject):
 
     def _on_normalization_finished(self, locked_floors: tuple, locked_ceils: tuple) -> None:
         """
-        Applies averaged normalization baseline to all files.
+        Applies averaged normalization baseline to all non-excluded files.
         """
-        for f_info in self.state.uploaded_files:
+        active_files = [f for f in self.state.uploaded_files if f["hash"] not in self.state.excluded_file_hashes]
+        for f_info in active_files:
             p = self.session.repo.load_file_settings(f_info["hash"]) or replace(self.state.config)
             new_process = replace(
                 p.process,
@@ -573,6 +579,12 @@ class AppController(QObject):
         self.status_progress_requested.emit(0, 0)
         self.request_render()
 
+        non_current = [f for f in active_files if f["path"] != self.state.current_file_path]
+        if non_current:
+            self.pipeline_thumbnail_requested.emit(
+                PipelineThumbnailTask(files=non_current, workspace_color_space=self.state.workspace_color_space)
+            )
+
     def save_current_normalization_as_roll(self, name: str) -> None:
         """
         Persists current batch normalization values as a named roll.
@@ -588,12 +600,13 @@ class AppController(QObject):
 
     def apply_normalization_roll(self, name: str) -> None:
         """
-        Loads and applies a named normalization roll to the entire session.
+        Loads and applies a named normalization roll to all non-excluded files.
         """
         data = self.session.repo.load_normalization_roll(name)
         if data:
             locked_floors, locked_ceils = data
-            for f_info in self.state.uploaded_files:
+            active_files = [f for f in self.state.uploaded_files if f["hash"] not in self.state.excluded_file_hashes]
+            for f_info in active_files:
                 p = self.session.repo.load_file_settings(f_info["hash"]) or replace(self.state.config)
                 new_process = replace(
                     p.process,
@@ -739,8 +752,9 @@ class AppController(QObject):
 
         visible_files = [self.state.uploaded_files[i] for i in self.session.asset_model.visible_actual_indices_ordered()]
 
+        active_files = [f for f in self.state.uploaded_files if f["hash"] not in self.state.excluded_file_hashes]
         tasks = []
-        for f in visible_files:
+        for f in active_files:
             params = self.session.repo.load_file_settings(f["hash"]) or self.state.config
 
             if override_settings:

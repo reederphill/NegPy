@@ -109,6 +109,7 @@ class WorkspaceConfig:
     finish: FinishConfig = field(default_factory=FinishConfig)
     metadata: MetadataConfig = field(default_factory=MetadataConfig)
     export: ExportConfig = field(default_factory=ExportConfig)
+    excluded: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         """
@@ -124,6 +125,7 @@ class WorkspaceConfig:
         res.update(asdict(self.finish))
         res.update(asdict(self.metadata))
         res.update(asdict(self.export))
+        res["excluded"] = self.excluded
         return res
 
     @classmethod
@@ -158,6 +160,7 @@ class WorkspaceConfig:
         valid_keys = set()
         for cc in config_classes:
             valid_keys.update(cc.__dataclass_fields__.keys())
+        valid_keys.add("excluded")
 
         unknown = set(data) - valid_keys
         if unknown:
@@ -177,4 +180,5 @@ class WorkspaceConfig:
             finish=FinishConfig(**filter_keys(FinishConfig, data)),
             metadata=MetadataConfig(**filter_keys(MetadataConfig, data)),
             export=ExportConfig(**filter_keys(ExportConfig, data)),
+            excluded=bool(data.get("excluded", False)),
         )

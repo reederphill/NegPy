@@ -99,7 +99,9 @@ class TestAppController(unittest.TestCase):
         self.controller.request_render.assert_called_once_with()
 
     def test_apply_auto_crop_enables_auto_crop_and_clears_manual_rect(self):
-        geometry = replace(self.controller.state.config.geometry, manual_crop_rect=(0.1, 0.1, 0.9, 0.9), auto_crop_enabled=False)
+        geometry = replace(
+            self.controller.state.config.geometry, manual_crop_rect=(0.1, 0.1, 0.9, 0.9), auto_crop_enabled=False, autocrop_ratio="3:2"
+        )
         self.controller.state.config = replace(self.controller.state.config, geometry=geometry)
         self.controller.request_render = MagicMock()
 
@@ -252,6 +254,171 @@ class TestBatchExportFiltering(unittest.TestCase):
         tasks = self._captured_tasks()
         for t in tasks:
             self.assertEqual(t.params.export.export_path, "/tmp/out")
+
+
+class TestExclusion(unittest.TestCase):
+    """Tests for image exclusion from batch operations."""
+
+    def setUp(self):
+        self.mock_session = MagicMock(spec=DesktopSessionManager)
+        self.mock_session.state = AppState()
+        self.mock_session.repo = MagicMock()
+
+        with (
+            patch("negpy.desktop.controller.RenderWorker") as mock_rw_class,
+            patch("negpy.desktop.controller.PreviewManager") as mock_pm_class,
+        ):
+            mock_rw_class.return_value = MagicMock()
+            mock_pm_class.return_value = MagicMock(spec=PreviewManager)
+            mock_pm_class.return_value.load_linear_preview.return_value = (None, (0, 0), {})
+            self.controller = AppController(self.mock_session)
+
+        self.controller.normalization_requested = MagicMock()
+        self.controller.normalization_progress = MagicMock()
+
+    def tearDown(self):
+        import gc
+
+        for thread in [
+            self.controller.render_thread,
+            self.controller.export_thread,
+            self.controller.thumb_thread,
+            self.controller.norm_thread,
+            self.controller.pipeline_thumb_thread,
+            self.controller.discovery_thread,
+            self.controller.preview_load_thread,
+        ]:
+            if thread is not None and thread.isRunning():
+                thread.quit()
+                thread.wait()
+        del self.controller
+        gc.collect()
+
+    def _make_files(self):
+        return [
+            {"name": "a.arw", "path": "/a.arw", "hash": "hash_a"},
+            {"name": "b.arw", "path": "/b.arw", "hash": "hash_b"},
+            {"name": "c.arw", "path": "/c.arw", "hash": "hash_c"},
+        ]
+
+    def test_batch_normalization_skips_excluded_files(self):
+        state = self.controller.state
+        state.uploaded_files = self._make_files()
+        state.excluded_file_hashes = {"hash_b"}
+
+        self.controller.request_batch_normalization()
+
+        call_args = self.controller.normalization_requested.emit.call_args
+        task = call_args[0][0]
+        hashes = [f["hash"] for f in task.files]
+        self.assertIn("hash_a", hashes)
+        self.assertNotIn("hash_b", hashes)
+        self.assertIn("hash_c", hashes)
+
+    def test_batch_normalization_noop_when_all_excluded(self):
+        state = self.controller.state
+        state.uploaded_files = self._make_files()
+        state.excluded_file_hashes = {"hash_a", "hash_b", "hash_c"}
+
+        self.controller.request_batch_normalization()
+
+        self.controller.normalization_requested.emit.assert_not_called()
+
+    def test_batch_export_skips_excluded_files(self):
+        state = self.controller.state
+        state.uploaded_files = self._make_files()
+        state.excluded_file_hashes = {"hash_a"}
+        state.current_file_hash = None
+
+        self.mock_session.repo.load_file_settings.return_value = None
+        self.controller._ensure_valid_export_path = MagicMock(return_value="/tmp/out")
+
+        captured_tasks = []
+        self.controller._run_export_tasks = MagicMock(side_effect=lambda tasks: captured_tasks.extend(tasks))
+
+        self.controller.request_batch_export()
+
+        exported_hashes = [t.file_info["hash"] for t in captured_tasks]
+        self.assertNotIn("hash_a", exported_hashes)
+        self.assertIn("hash_b", exported_hashes)
+        self.assertIn("hash_c", exported_hashes)
+
+    def test_sync_selected_settings_preserves_excluded_flag(self):
+        from negpy.domain.models import WorkspaceConfig
+        from negpy.desktop.session import DesktopSessionManager
+
+        session = MagicMock(spec=DesktopSessionManager)
+        session.state = AppState()
+        session.repo = MagicMock()
+
+        state = session.state
+        state.uploaded_files = self._make_files()
+        state.selected_file_idx = 0
+        state.selected_indices = [0, 1]
+
+        source_config = WorkspaceConfig()
+        target_config = WorkspaceConfig(excluded=True)
+
+        state.config = source_config
+        session.repo.load_file_settings.return_value = target_config
+
+        saved_configs = {}
+
+        def capture_save(file_hash, config):
+            saved_configs[file_hash] = config
+
+        session.repo.save_file_settings.side_effect = capture_save
+
+        # Call the real method
+        DesktopSessionManager.sync_selected_settings(session)
+
+        self.assertIn("hash_b", saved_configs)
+        self.assertTrue(saved_configs["hash_b"].excluded, "sync must not overwrite target's excluded flag")
+
+
+class TestToggleExcludeSelected(unittest.TestCase):
+    """Tests for toggle_exclude_selected session method."""
+
+    def setUp(self):
+        from negpy.desktop.session import DesktopSessionManager
+
+        self.session = MagicMock(spec=DesktopSessionManager)
+        self.session.state = AppState()
+        self.session.repo = MagicMock()
+        self.session.state.uploaded_files = [
+            {"name": "a.arw", "path": "/a.arw", "hash": "hash_a"},
+            {"name": "b.arw", "path": "/b.arw", "hash": "hash_b"},
+        ]
+        self.session.state.selected_file_idx = 0
+        self.session.state.selected_indices = [0]
+
+        self.saved = {}
+        self.session.repo.load_file_settings.return_value = None
+        self.session.repo.save_file_settings.side_effect = lambda h, c: self.saved.update({h: c})
+
+    def _toggle(self):
+        from negpy.desktop.session import DesktopSessionManager
+
+        DesktopSessionManager.toggle_exclude_selected(self.session)
+
+    def test_toggle_adds_to_excluded_set(self):
+        self._toggle()
+        self.assertIn("hash_a", self.session.state.excluded_file_hashes)
+
+    def test_toggle_twice_removes_from_excluded_set(self):
+        self.session.repo.load_file_settings.side_effect = lambda h: self.saved.get(h)
+        self._toggle()
+        self._toggle()
+        self.assertNotIn("hash_a", self.session.state.excluded_file_hashes)
+
+    def test_toggle_updates_state_config_for_active_file(self):
+        self._toggle()
+        self.assertTrue(self.session.state.config.excluded)
+
+    def test_toggle_does_not_update_state_config_for_non_active_file(self):
+        self.session.state.selected_indices = [1]
+        self._toggle()
+        self.assertFalse(self.session.state.config.excluded)
 
 
 if __name__ == "__main__":

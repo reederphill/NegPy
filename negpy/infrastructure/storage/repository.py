@@ -120,6 +120,11 @@ class StorageRepository(IRepository):
                 return WorkspaceConfig.from_flat_dict(data)
         return None
 
+    def load_excluded_hashes(self) -> set[str]:
+        with sqlite3.connect(self.edits_db_path) as conn:
+            rows = conn.execute("SELECT file_hash FROM file_settings WHERE json_extract(settings_json, '$.excluded') = 1").fetchall()
+        return {row[0] for row in rows}
+
     def save_history_step(self, file_hash: str, index: int, settings: WorkspaceConfig) -> None:
         with sqlite3.connect(self.edits_db_path) as conn:
             settings_json = json.dumps(settings.to_dict(), default=str)

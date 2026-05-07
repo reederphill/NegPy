@@ -38,6 +38,7 @@ class AppState:
     source_exif: Dict[str, Any] = field(default_factory=dict)  # file_hash -> piexif dict
     selected_file_idx: int = -1
     selected_indices: List[int] = field(default_factory=list)
+    excluded_file_hashes: set[str] = field(default_factory=set)
     active_adjustment_idx: int = 0
     last_metrics: Dict[str, Any] = field(default_factory=dict)
     metrics_lock: threading.Lock = field(default_factory=threading.Lock, init=False, compare=False, repr=False)
@@ -465,11 +466,34 @@ class DesktopSessionManager(QObject):
                     geometry=merged_geo,
                     retouch=merged_retouch,
                     process=merged_process,
+                    excluded=target_config.excluded,
                 )
 
                 self.repo.save_file_settings(target_hash, new_config)
 
         self.settings_saved.emit()
+
+    def toggle_exclude_selected(self) -> None:
+        """Toggles the excluded flag for all currently selected files."""
+        if not self.state.selected_indices:
+            return
+
+        for idx in self.state.selected_indices:
+            if not (0 <= idx < len(self.state.uploaded_files)):
+                continue
+            file_info = self.state.uploaded_files[idx]
+            file_hash = file_info["hash"]
+            config = self.repo.load_file_settings(file_hash) or WorkspaceConfig()
+            new_config = replace(config, excluded=not config.excluded)
+            self.repo.save_file_settings(file_hash, new_config)
+            if new_config.excluded:
+                self.state.excluded_file_hashes.add(file_hash)
+            else:
+                self.state.excluded_file_hashes.discard(file_hash)
+            if idx == self.state.selected_file_idx:
+                self.state.config = replace(self.state.config, excluded=new_config.excluded)
+
+        self.state_changed.emit()
 
     def next_file(self) -> None:
         if self.state.selected_file_idx < len(self.state.uploaded_files) - 1:
@@ -612,6 +636,7 @@ class DesktopSessionManager(QObject):
 
                     get_logger(__name__).error(f"Failed to add {path}: {e}")
 
+        self.state.excluded_file_hashes = self.repo.load_excluded_hashes()
         self.asset_model.refresh()
         self.state_changed.emit()
 
@@ -621,6 +646,7 @@ class DesktopSessionManager(QObject):
         """
         self.state.uploaded_files.clear()
         self.state.thumbnails.clear()
+        self.state.excluded_file_hashes.clear()
         self.state.selected_file_idx = -1
         self.state.current_file_path = None
         self.state.current_file_hash = None

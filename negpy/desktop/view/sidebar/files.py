@@ -24,7 +24,7 @@ from negpy.infrastructure.loaders.helpers import get_supported_raw_wildcards
 
 
 class _DirtyUnderlineDelegate(QStyledItemDelegate):
-    """Draws a 1px accent line under the selected item when the file is dirty."""
+    """Draws a 1px accent line under the selected item when dirty; draws a red X over excluded files."""
 
     def _is_active_dirty(self, index: QModelIndex) -> bool:
         model = index.model()
@@ -34,12 +34,30 @@ class _DirtyUnderlineDelegate(QStyledItemDelegate):
         actual_idx = model.display_to_actual(index.row())
         return actual_idx == state.selected_file_idx and state.is_dirty
 
+    def _is_excluded(self, index: QModelIndex) -> bool:
+        model = index.model()
+        if model is None or not hasattr(model, "_state"):
+            return False
+        state = model._state
+        actual_idx = model.display_to_actual(index.row())
+        if not (0 <= actual_idx < len(state.uploaded_files)):
+            return False
+        return state.uploaded_files[actual_idx]["hash"] in state.excluded_file_hashes
+
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
         super().paint(painter, option, index)
         if self._is_active_dirty(index):
             pen = QPen(QColor(THEME.accent_primary), 1)
             painter.setPen(pen)
             painter.drawLine(option.rect.bottomLeft(), option.rect.bottomRight())
+        if self._is_excluded(index):
+            painter.save()
+            pen = QPen(QColor(200, 50, 50, 200), 3)
+            painter.setPen(pen)
+            r = option.rect.adjusted(8, 8, -8, -24)  # inset, leave room for label
+            painter.drawLine(r.topLeft(), r.bottomRight())
+            painter.drawLine(r.topRight(), r.bottomLeft())
+            painter.restore()
 
 
 class FileBrowser(QWidget):
@@ -103,8 +121,13 @@ class FileBrowser(QWidget):
         self.sync_btn.setIcon(qta.icon("fa5s.sync", color=THEME.text_primary))
         self.sync_btn.setToolTip("Apply current settings to all selected images (excluding crop/rotation)")
 
+        self.exclude_btn = QPushButton(" Exclude")
+        self.exclude_btn.setIcon(qta.icon("fa5s.ban", color=THEME.accent_primary))
+        self.exclude_btn.setToolTip("Toggle exclusion of selected images from batch analysis and export")
+
         hot_sync_row.addWidget(self.hot_folder_btn)
         hot_sync_row.addWidget(self.sync_btn)
+        hot_sync_row.addWidget(self.exclude_btn)
         action_layout.addLayout(hot_sync_row)
 
         sort_row = QHBoxLayout()
@@ -188,6 +211,7 @@ class FileBrowser(QWidget):
         self.list_view.selectionModel().selectionChanged.connect(self._on_selection_changed)
         self.hot_folder_btn.toggled.connect(self._on_hot_folder_toggled)
         self.sync_btn.clicked.connect(self.session.sync_selected_settings)
+        self.exclude_btn.clicked.connect(self.session.toggle_exclude_selected)
         self.session.state_changed.connect(self.sync_ui)
         self.sort_name_btn.clicked.connect(lambda: self._apply_sort_order("name"))
         self.sort_date_btn.clicked.connect(lambda: self._apply_sort_order("date"))
@@ -356,3 +380,8 @@ class FileBrowser(QWidget):
             self.session.update_selection(actual_indices)
         else:
             self.session.select_file(actual_clicked, selection_override=actual_indices)
+
+    def _on_item_double_clicked(self, index) -> None:
+        actual = self.session.asset_model.display_to_actual(index.row())
+        if actual >= 0:
+            self.session.select_file(actual)

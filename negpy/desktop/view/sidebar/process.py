@@ -275,3 +275,14 @@ class ProcessSidebar(BaseSidebar):
         ]
         for w in widgets:
             w.blockSignals(blocked)
+
+    def _on_normalization_progress(self, current: int, total: int) -> None:
+        self.analyze_roll_btn.setEnabled(False)
+        self.analyze_roll_btn.setIcon(qta.icon("fa5s.circle-notch", color=THEME.text_secondary, animation=qta.Spin(self.analyze_roll_btn)))
+        label = f" {current}/{total}" if current > 0 else f" 0/{total}"
+        self.analyze_roll_btn.setText(label)
+
+    def _on_normalization_finished(self) -> None:
+        self.analyze_roll_btn.setEnabled(True)
+        self.analyze_roll_btn.setIcon(qta.icon("fa5s.search", color=THEME.text_primary))
+        self.analyze_roll_btn.setText(" Batch Analysis")
