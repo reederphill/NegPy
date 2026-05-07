@@ -383,3 +383,65 @@ class NormalizationWorker(QObject):
         except Exception as e:
             logger.error(f"Batch Normalization failure: {e}")
             self.error.emit(str(e))
+
+
+
+class PipelineThumbnailWorker(QObject):
+    """
+    Background worker that runs the full CPU darkroom pipeline on half-size images
+    to produce positive, cropped, orientation-correct thumbnails for all files.
+    """
+
+    progress = pyqtSignal(int, int, str)
+    finished = pyqtSignal(dict)
+    error = pyqtSignal(str)
+
+    def __init__(self, preview_service, repo, asset_store) -> None:
+        super().__init__()
+        self._preview_service = preview_service
+        self._repo = repo
+        self._store = asset_store
+        self._cancel = False
+
+    def cancel(self) -> None:
+        self._cancel = True
+
+    @pyqtSlot(PipelineThumbnailTask)
+    def process(self, task: PipelineThumbnailTask) -> None:
+        from negpy.domain.interfaces import PipelineContext
+        from negpy.services.assets.thumbnails import get_rendered_thumbnail
+        from negpy.services.rendering.engine import DarkroomEngine
+
+        self._cancel = False
+        engine = DarkroomEngine()
+        total = len(task.files)
+
+        for i, f_info in enumerate(task.files):
+            if self._cancel:
+                break
+            try:
+                settings = self._repo.load_file_settings(f_info["hash"]) or DEFAULT_WORKSPACE_CONFIG
+                raw, _, _ = self._preview_service.load_linear_preview(
+                    f_info["path"],
+                    task.workspace_color_space,
+                    settings.exposure.linear_raw,
+                    False,
+                    f_info.get("hash"),
+                )
+                if raw is None:
+                    continue
+
+                h, w = raw.shape[:2]
+                context = PipelineContext(
+                    scale_factor=0.5,
+                    original_size=(h * 2, w * 2),
+                    process_mode=settings.process.process_mode,
+                )
+                result = engine.process(raw, settings, f_info["hash"], context)
+
+                thumb = get_rendered_thumbnail(result, f_info["hash"], self._store)
+                if thumb:
+                    self.finished.emit({f_info["name"]: thumb})
+                self.progress.emit(i + 1, total, f_info["name"])
+            except Exception as e:
+                logger.error(f"Pipeline thumbnail failed for {f_info['name']}: {e}")
