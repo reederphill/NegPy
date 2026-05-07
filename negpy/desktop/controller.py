@@ -126,6 +126,9 @@ class AppController(QObject):
         self._cursor_readout_timer.timeout.connect(self._emit_pixel_readout)
         self._pending_cursor_nx: Optional[float] = None
         self._pending_cursor_ny: Optional[float] = None
+        self._prefetch_gen = 0
+        self._preview_load_t0 = 0.0
+        self._displayed_file_info: Optional[dict] = None
 
         self._connect_signals()
 
@@ -271,6 +274,11 @@ class AppController(QObject):
         """
         Dispatches RAW decode to a background worker to keep the UI thread free.
         """
+        prev_file_info = self._displayed_file_info
+        self._displayed_file_info = next((f for f in self.state.uploaded_files if f["path"] == file_path), None)
+
+        self._prefetch_gen += 1
+        self._preview_load_t0 = time.perf_counter()
         if not preserve_zoom:
             self.zoom_requested.emit(1.0)
         self.set_status(f"Loading {os.path.basename(file_path)}...")
@@ -290,6 +298,20 @@ class AppController(QObject):
                 full_resolution=self.state.hq_preview,
             )
         )
+
+        if prev_file_info and prev_file_info["path"] != file_path:
+            still_loaded = any(f["path"] == prev_file_info["path"] for f in self.state.uploaded_files)
+            if still_loaded:
+                self.pipeline_thumbnail_requested.emit(
+                    PipelineThumbnailTask(files=[prev_file_info], workspace_color_space=self.state.workspace_color_space)
+                )
+
+    def _on_splash_preview(self, file_path: str, raw: Any, dims: Any) -> None:
+        if self.state.current_file_path != file_path:
+            return
+        self.state.preview_raw = raw
+        self.state.original_res = dims
+        self.request_render()
 
     def _on_preview_loaded(self, file_path: str, raw: Any, dims: Any, source_cs: str) -> None:
         self.state.preview_raw = raw
