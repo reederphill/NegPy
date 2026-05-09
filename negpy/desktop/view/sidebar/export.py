@@ -1,8 +1,8 @@
 import qtawesome as qta
 from PyQt6.QtCore import QTimer
-
 from PyQt6.QtWidgets import (
     QButtonGroup,
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QHBoxLayout,
@@ -29,10 +29,9 @@ class ExportSidebar(BaseSidebar):
         self.layout.setSpacing(10)
         conf = self.state.config.export
 
-        # Debounce timer for all export settings
         self.update_timer = QTimer()
         self.update_timer.setSingleShot(True)
-        self.update_timer.setInterval(1000)
+        self.update_timer.setInterval(500)
         self.update_timer.timeout.connect(self._persist_all_export_settings)
 
         self.layout.addWidget(section_subheader("FORMAT"))
@@ -136,6 +135,15 @@ class ExportSidebar(BaseSidebar):
         )
         self.layout.addWidget(self.pattern_input)
 
+        checkbox_row = QHBoxLayout()
+        self.overwrite_checkbox = QCheckBox("Overwrite existing files")
+        self.overwrite_checkbox.setChecked(conf.overwrite)
+        self.same_as_source_checkbox = QCheckBox("Same folder as source")
+        self.same_as_source_checkbox.setChecked(conf.same_as_source)
+        checkbox_row.addWidget(self.overwrite_checkbox)
+        checkbox_row.addWidget(self.same_as_source_checkbox)
+        self.layout.addLayout(checkbox_row)
+
         path_layout = QHBoxLayout()
         self.path_input = QLineEdit(conf.export_path)
         self.path_input.setToolTip("Export folder")
@@ -169,7 +177,6 @@ class ExportSidebar(BaseSidebar):
         self.layout.addStretch()
 
     def _connect_signals(self) -> None:
-        # All changes trigger the same debounce timer
         self.fmt_combo.currentTextChanged.connect(lambda _: self.update_timer.start())
         self.cs_combo.currentTextChanged.connect(lambda _: self.update_timer.start())
         self.ratio_combo.currentTextChanged.connect(lambda _: self.update_timer.start())
@@ -182,6 +189,8 @@ class ExportSidebar(BaseSidebar):
         self.browse_btn.clicked.connect(self._on_browse_clicked)
         self.pattern_input.textChanged.connect(lambda _: self.update_timer.start())
         self.path_input.textChanged.connect(lambda _: self.update_timer.start())
+        self.overwrite_checkbox.stateChanged.connect(lambda _: self.update_timer.start())
+        self.same_as_source_checkbox.stateChanged.connect(self._on_same_as_source_toggled)
 
         self.apply_all_btn.toggled.connect(self._update_apply_all_style)
         self.batch_export_btn.clicked.connect(
@@ -220,6 +229,8 @@ class ExportSidebar(BaseSidebar):
             export_target_long_edge_px=self.target_px_input.value(),
             filename_pattern=self.pattern_input.text(),
             export_path=self.path_input.text(),
+            overwrite=self.overwrite_checkbox.isChecked(),
+            same_as_source=self.same_as_source_checkbox.isChecked(),
         )
 
     _MODE_BY_ID = {
@@ -248,6 +259,12 @@ class ExportSidebar(BaseSidebar):
         self._update_mode_visibility(self._current_mode_value())
         self.update_timer.start()
 
+    def _on_same_as_source_toggled(self) -> None:
+        checked = self.same_as_source_checkbox.isChecked()
+        self.path_input.setDisabled(checked)
+        self.browse_btn.setDisabled(checked)
+        self.update_timer.start()
+
     def _on_browse_clicked(self) -> None:
         from PyQt6.QtWidgets import QFileDialog
 
@@ -269,6 +286,10 @@ class ExportSidebar(BaseSidebar):
             self.target_px_input.setValue(conf.export_target_long_edge_px)
             self.pattern_input.setText(conf.filename_pattern)
             self.path_input.setText(conf.export_path)
+            self.overwrite_checkbox.setChecked(conf.overwrite)
+            self.same_as_source_checkbox.setChecked(conf.same_as_source)
+            self.path_input.setDisabled(conf.same_as_source)
+            self.browse_btn.setDisabled(conf.same_as_source)
         finally:
             self.block_signals(False)
 
@@ -285,6 +306,8 @@ class ExportSidebar(BaseSidebar):
             self.target_px_input,
             self.pattern_input,
             self.path_input,
+            self.overwrite_checkbox,
+            self.same_as_source_checkbox,
         ]
         for w in widgets:
             w.blockSignals(blocked)
