@@ -1,5 +1,10 @@
 # Change Log
 
+## 0.20.0
+
+- Added **filtering** options to film strip - details in [FILTERING.md](docs/FILTERING.md)
+- Fix: HQ preview scaling up crop offset setting.
+
 ## 0.19.0
 
 - Added **Metadata panel**: new "Metadata" tab in the session panel — set Film stock, Format, Developer, Push/Pull, and Scanner info written as EXIF tags into exported files. Shows read-only inherited EXIF from the source file (camera make/model, lens, exposure settings). Optionally sync custom metadata across all files in a batch export.
