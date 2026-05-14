@@ -1,6 +1,7 @@
 """
 Algorithm 2: Scanline Boundary Detection with Per-Side RANSAC Line Fitting.
 """
+
 from typing import Optional, Tuple
 import numpy as np
 import cv2
@@ -93,13 +94,13 @@ def _infer_missing_normal(
     if opp is None:
         # Fallback: image-boundary line
         if missing_idx == 0:
-            return np.array([0.0, 1.0, 0.0])          # y=0
+            return np.array([0.0, 1.0, 0.0])  # y=0
         elif missing_idx == 2:
             return np.array([0.0, 1.0, float(img_h)])  # y=img_h
         elif missing_idx == 1:
             return np.array([1.0, 0.0, float(img_w)])  # x=img_w
         else:
-            return np.array([1.0, 0.0, 0.0])           # x=0
+            return np.array([1.0, 0.0, 0.0])  # x=0
 
     a, b, c = opp
     offset = frame_height if missing_idx == 0 else -frame_height
@@ -127,7 +128,7 @@ def detect(
 
     # Top edge: scan each column top→down, find first strong positive gy
     for x in range(img_w):
-        col = gy[:margin_y + img_h // 2, x]
+        col = gy[: margin_y + img_h // 2, x]
         mad = float(np.median(np.abs(col - np.median(col)))) * 1.5 + 1e-6
         threshold = max(mad, 0.02)
         peaks = np.where(col > threshold)[0]
@@ -136,7 +137,7 @@ def detect(
 
     # Bottom edge: scan each column bottom→up, find first strong negative gy
     for x in range(img_w):
-        col = gy[img_h // 2:, x][::-1]
+        col = gy[img_h // 2 :, x][::-1]
         mad = float(np.median(np.abs(col - np.median(col)))) * 1.5 + 1e-6
         threshold = max(mad, 0.02)
         peaks = np.where(col < -threshold)[0]
@@ -145,7 +146,7 @@ def detect(
 
     # Left edge: scan each row left→right
     for y in range(img_h):
-        row = gx[y, :margin_x + img_w // 2]
+        row = gx[y, : margin_x + img_w // 2]
         mad = float(np.median(np.abs(row - np.median(row)))) * 1.5 + 1e-6
         threshold = max(mad, 0.02)
         peaks = np.where(row > threshold)[0]
@@ -154,7 +155,7 @@ def detect(
 
     # Right edge: scan each row right→left
     for y in range(img_h):
-        row = gx[y, img_w // 2:][::-1]
+        row = gx[y, img_w // 2 :][::-1]
         mad = float(np.median(np.abs(row - np.median(row)))) * 1.5 + 1e-6
         threshold = max(mad, 0.02)
         peaks = np.where(row < -threshold)[0]
@@ -178,7 +179,7 @@ def detect(
             lines[side] = line
             inlier_fracs[side] = frac
 
-    missing = [i for i, l in enumerate(lines) if l is None]
+    missing = [i for i, ln in enumerate(lines) if ln is None]
     if len(missing) > 1:
         return fallback_roi, 0.0
 
@@ -188,7 +189,7 @@ def detect(
         inlier_fracs[mi] = 0.1
 
     # Intersect adjacent lines for corners: top∩right, right∩bottom, bottom∩left, left∩top
-    order = [0, 1, 2, 3]   # top, right, bottom, left
+    order = [0, 1, 2, 3]  # top, right, bottom, left
     corners = []
     for i in range(4):
         pt = _line_intersection_normal(lines[order[i]], lines[order[(i + 1) % 4]])

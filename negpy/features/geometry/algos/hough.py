@@ -1,6 +1,7 @@
 """
 Algorithm 1: Probabilistic Hough Line Transform + Quadrilateral Fitting.
 """
+
 from typing import Optional, Tuple
 import numpy as np
 import cv2
@@ -63,13 +64,13 @@ def _infer_missing_edge(
     if opp is None:
         # Fallback: image-boundary line
         if missing_idx == 0:
-            return np.array([0.0, 1.0, 0.0])           # y=0
+            return np.array([0.0, 1.0, 0.0])  # y=0
         elif missing_idx == 2:
             return np.array([0.0, 1.0, float(img_h)])  # y=img_h
         elif missing_idx == 1:
             return np.array([1.0, 0.0, float(img_w)])  # x=img_w
         else:
-            return np.array([1.0, 0.0, 0.0])           # x=0
+            return np.array([1.0, 0.0, 0.0])  # x=0
 
     a, b, c = opp
     offset = frame_height if missing_idx == 0 else -frame_height
@@ -87,12 +88,11 @@ def detect(
     # Bilateral-smooth then Canny with a minimum threshold floor
     luma8 = (np.clip(luma, 0, 1) * 255).astype(np.uint8)
     smooth = cv2.bilateralFilter(luma8, d=9, sigmaColor=50, sigmaSpace=50)
-    grad_mag = np.sqrt(
-        cv2.Sobel(smooth, cv2.CV_32F, 1, 0, ksize=3) ** 2
-        + cv2.Sobel(smooth, cv2.CV_32F, 0, 1, ksize=3) ** 2
-    )
+    grad_mag = np.sqrt(cv2.Sobel(smooth, cv2.CV_32F, 1, 0, ksize=3) ** 2 + cv2.Sobel(smooth, cv2.CV_32F, 0, 1, ksize=3) ** 2)
     otsu_thresh, _ = cv2.threshold(
-        np.clip(grad_mag, 0, 255).astype(np.uint8), 0, 255,
+        np.clip(grad_mag, 0, 255).astype(np.uint8),
+        0,
+        255,
         cv2.THRESH_BINARY + cv2.THRESH_OTSU,
     )
     canny_high = max(float(otsu_thresh) * 1.5, 30.0)
@@ -102,8 +102,12 @@ def detect(
     diag = float(np.hypot(img_h, img_w))
     min_len = int(diag * 0.10)
     lines_raw = cv2.HoughLinesP(
-        edges, rho=1, theta=np.pi / 360, threshold=30,
-        minLineLength=min_len, maxLineGap=30,
+        edges,
+        rho=1,
+        theta=np.pi / 360,
+        threshold=30,
+        minLineLength=min_len,
+        maxLineGap=30,
     )
 
     if lines_raw is None or len(lines_raw) < 4:
@@ -114,10 +118,13 @@ def detect(
     mids_y = (segments[:, 1] + segments[:, 3]) / 2.0
 
     # Angle in [0, π): 0 = horizontal line direction, π/2 = vertical line direction
-    angles = np.arctan2(
-        (segments[:, 3] - segments[:, 1]).astype(float),
-        (segments[:, 2] - segments[:, 0]).astype(float),
-    ) % np.pi
+    angles = (
+        np.arctan2(
+            (segments[:, 3] - segments[:, 1]).astype(float),
+            (segments[:, 2] - segments[:, 0]).astype(float),
+        )
+        % np.pi
+    )
 
     # Split into 2 orientation groups: horizontal-ish (angle < π/4 or > 3π/4) vs vertical-ish
     horiz_mask = (angles < np.pi / 4) | (angles > 3 * np.pi / 4)
@@ -127,10 +134,10 @@ def detect(
     # horizontal → top (y < img_h/2) / bottom (y >= img_h/2)
     # vertical   → left (x < img_w/2) / right (x >= img_w/2)
     side_masks = {
-        0: horiz_mask & (mids_y < img_h / 2),   # top
-        1: vert_mask  & (mids_x >= img_w / 2),  # right
+        0: horiz_mask & (mids_y < img_h / 2),  # top
+        1: vert_mask & (mids_x >= img_w / 2),  # right
         2: horiz_mask & (mids_y >= img_h / 2),  # bottom
-        3: vert_mask  & (mids_x < img_w / 2),   # left
+        3: vert_mask & (mids_x < img_w / 2),  # left
     }
 
     lines: list[Optional[np.ndarray]] = [None, None, None, None]
@@ -152,7 +159,7 @@ def detect(
         inlier_fractions[side] = len(idx) / max(len(segments), 1)
 
     # Detect and fill missing edges
-    missing = [i for i, l in enumerate(lines) if l is None]
+    missing = [i for i, ln in enumerate(lines) if ln is None]
     if len(missing) > 1:
         return fallback_roi, 0.0
 

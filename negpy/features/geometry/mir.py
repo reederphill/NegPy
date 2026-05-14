@@ -1,6 +1,7 @@
 """
 Maximum Inscribed axis-aligned Rectangle within a convex quadrilateral.
 """
+
 from typing import Optional
 import numpy as np
 from negpy.domain.types import ROI
@@ -81,8 +82,8 @@ def max_inscribed_rect(
         xl_min = xl_arr[i]
         xr_min = xr_arr[i]
         for j in range(i, n):
-            xl_min = max(xl_min, xl_arr[j])   # left bound tightens inward
-            xr_min = min(xr_min, xr_arr[j])   # right bound tightens inward
+            xl_min = max(xl_min, xl_arr[j])  # left bound tightens inward
+            xr_min = min(xr_min, xr_arr[j])  # right bound tightens inward
             if xr_min <= xl_min:
                 break
             height = ys_arr[j] - ys_arr[i]
@@ -113,10 +114,7 @@ def quad_confidence(
         return 0.0
 
     # Parallelogram regularity: opposite sides should be equal length
-    sides = [
-        np.linalg.norm(quad[(i + 1) % 4] - quad[i])
-        for i in range(4)
-    ]
+    sides = [np.linalg.norm(quad[(i + 1) % 4] - quad[i]) for i in range(4)]
     if max(sides) < 1.0:
         return 0.0
     opp_diff = abs(sides[0] - sides[2]) + abs(sides[1] - sides[3])
@@ -138,12 +136,7 @@ def quad_confidence(
     dist_frac = float(np.linalg.norm(centroid - img_centre)) / (diag + 1e-6)
     centroid_score = float(np.exp(-0.5 * (dist_frac / 0.20) ** 2))
 
-    score = (
-        0.40 * np.clip(inlier_fraction, 0.0, 1.0)
-        + 0.25 * regularity
-        + 0.20 * area_score
-        + 0.15 * centroid_score
-    )
+    score = 0.40 * np.clip(inlier_fraction, 0.0, 1.0) + 0.25 * regularity + 0.20 * area_score + 0.15 * centroid_score
     return float(np.clip(score, 0.0, 1.0))
 
 

@@ -28,6 +28,7 @@ class RenderTask:
     gpu_enabled: bool = True
     readback_metrics: bool = True
     ir_buffer: Optional[np.ndarray] = None
+    skip_crop: bool = False
 
 
 @dataclass(frozen=True)
@@ -108,6 +109,7 @@ class RenderWorker(QObject):
                 prefer_gpu=task.gpu_enabled,
                 readback_metrics=task.readback_metrics,
                 ir_buffer=task.ir_buffer,
+                skip_crop=task.skip_crop,
             )
 
             if task.icc_profile_path and isinstance(result, GPUTexture):

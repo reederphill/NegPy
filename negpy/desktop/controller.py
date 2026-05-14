@@ -108,6 +108,7 @@ class AppController(QObject):
         self._discovery_running = False
         self._gpu_fallback_notified = False
         self._cleaned_up = False
+        self._fit_on_next_render = False
 
         self.preview_service = PreviewManager()
         self.watcher = FolderWatchService()
@@ -134,6 +135,7 @@ class AppController(QObject):
         self.norm_worker = NormalizationWorker(self.preview_service, self.session.repo)
         self.norm_worker.moveToThread(self.norm_thread)
         self.norm_thread.start()
+
 
         self.discovery_thread = QThread()
         self.discovery_worker = AssetDiscoveryWorker()
@@ -449,8 +451,15 @@ class AppController(QObject):
             self._handle_dust_pick(nx, ny)
 
     def set_active_tool(self, mode: ToolMode) -> None:
+        was_crop = self.state.active_tool == ToolMode.CROP_MANUAL
         self.state.active_tool = mode
         self.tool_sync_requested.emit()
+
+        if mode == ToolMode.CROP_MANUAL:
+            self._fit_on_next_render = True
+            self.request_render()
+        elif was_crop:
+            self.request_render()
 
     def handle_crop_completed(self, nx1: float, ny1: float, nx2: float, ny2: float) -> None:
         if self.state.active_tool != ToolMode.CROP_MANUAL:
@@ -477,6 +486,7 @@ class AppController(QObject):
         self.session.update_config(replace(self.state.config, geometry=new_geo, process=new_proc))
         self.state.active_tool = ToolMode.NONE
         self.tool_sync_requested.emit()
+        self._fit_on_next_render = True
         self.request_render()
 
     def handle_crop_translated(self, nx1: float, ny1: float, nx2: float, ny2: float) -> None:
@@ -857,6 +867,7 @@ class AppController(QObject):
             gpu_enabled=self.state.gpu_enabled,
             readback_metrics=readback_metrics,
             ir_buffer=self.state.preview_ir,
+            skip_crop=self.state.active_tool == ToolMode.CROP_MANUAL,
         )
 
         if self._is_rendering:
@@ -1019,8 +1030,11 @@ class AppController(QObject):
 
         self.image_updated.emit()
 
-        if should_update_thumb:
-            self._update_thumbnail_from_state(force_readback=True)
+        if self._fit_on_next_render and self.canvas is not None:
+            self._fit_on_next_render = False
+            self.canvas.fit_to_window()
+
+        self._update_thumbnail_from_state(force_readback=True)
 
         if self._pending_render_task:
             task = self._pending_render_task

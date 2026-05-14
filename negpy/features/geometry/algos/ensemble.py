@@ -2,6 +2,7 @@
 Runs all 3 frame-detection algorithms in parallel and picks the highest-confidence result.
 Falls back to the legacy algorithm if all confidence scores are below 0.25.
 """
+
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional, Tuple
 import numpy as np
@@ -31,10 +32,7 @@ def detect(
     results: list[Tuple[str, ROI, float]] = []
 
     with ThreadPoolExecutor(max_workers=3) as pool:
-        futures = {
-            pool.submit(fn, luma, target_ratio_str, assist_luma): name
-            for name, fn in algos
-        }
+        futures = {pool.submit(fn, luma, target_ratio_str, assist_luma): name for name, fn in algos}
         for future in as_completed(futures):
             name = futures[future]
             try:

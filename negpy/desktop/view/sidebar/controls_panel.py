@@ -155,6 +155,8 @@ class ControlsPanel(QWidget):
         self.controller.config_updated.connect(self._sync_debounce.start)
         self.controller.tool_sync_requested.connect(self._sync_tool_buttons)
 
+        self.process_sidebar.show_analysis_buffer_overlay.connect(self.controller.canvas.overlay.set_show_analysis_buffer)
+
         self.exposure_section.reset_requested.connect(lambda: self.controller.session.reset_section("exposure"))
         self.lab_section.reset_requested.connect(lambda: self.controller.session.reset_section("lab"))
         self.toning_section.reset_requested.connect(lambda: self.controller.session.reset_section("toning"))

@@ -1,6 +1,7 @@
 import math
 
 import qtawesome as qta
+from PyQt6.QtCore import QEvent, pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -40,6 +41,8 @@ class ProcessSidebar(BaseSidebar):
     Panel for core film processing, normalization, and roll management.
     """
 
+    show_analysis_buffer_overlay = pyqtSignal(bool)
+
     def _init_ui(self) -> None:
         self.layout.setSpacing(12)
         conf = self.state.config.process
@@ -69,6 +72,7 @@ class ProcessSidebar(BaseSidebar):
         self.analysis_buffer_slider.setToolTip(
             "Crops the analysis region inward to exclude film borders and rebate from exposure calculations"
         )
+        self.analysis_buffer_slider.installEventFilter(self)
         initial_drange_slider_val = _drange_value_to_slider(conf.drange_clip)
         self.drange_clip_slider = CompactSlider("D-Range Clip", -100, 100, initial_drange_slider_val, precision=1, step=1, has_neutral=True)
         self.drange_clip_slider.setToolTip(
@@ -272,6 +276,14 @@ class ProcessSidebar(BaseSidebar):
         if name:
             self.controller.session.repo.delete_normalization_roll(name)
             self._refresh_rolls()
+
+    def eventFilter(self, obj: object, event: QEvent) -> bool:
+        if obj is self.analysis_buffer_slider:
+            if event.type() == QEvent.Type.Enter:
+                self.show_analysis_buffer_overlay.emit(True)
+            elif event.type() == QEvent.Type.Leave:
+                self.show_analysis_buffer_overlay.emit(False)
+        return super().eventFilter(obj, event)
 
     def sync_ui(self) -> None:
         conf = self.state.config.process
