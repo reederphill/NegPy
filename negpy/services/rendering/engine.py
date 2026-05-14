@@ -59,6 +59,7 @@ class DarkroomEngine:
         settings: WorkspaceConfig,
         source_hash: str,
         context: Optional[PipelineContext] = None,
+        skip_crop: bool = False,
     ) -> ImageBuffer:
         img = ensure_image(img)
         h_orig, w_cols = img.shape[:2]
@@ -142,7 +143,8 @@ class DarkroomEngine:
         current_img, pipeline_changed = self._run_stage(current_img, settings.lab, "lab", run_lab, context, pipeline_changed)
 
         current_img = ToningProcessor(settings.toning).process(current_img, context)
-        current_img = CropProcessor(settings.geometry).process(current_img, context)
+        if not skip_crop:
+            current_img = CropProcessor(settings.geometry).process(current_img, context)
         current_img = FinishProcessor(settings.finish).process(current_img, context)
 
         try:
@@ -154,7 +156,7 @@ class DarkroomEngine:
                 flip_h=settings.geometry.flip_horizontal,
                 flip_v=settings.geometry.flip_vertical,
                 autocrop=True,
-                autocrop_params={"roi": context.active_roi} if context.active_roi else None,
+                autocrop_params={"roi": context.active_roi} if (context.active_roi and not skip_crop) else None,
             )
             context.metrics["uv_grid"] = uv_grid
         except Exception as e:

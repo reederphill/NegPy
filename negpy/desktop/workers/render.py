@@ -26,6 +26,7 @@ class RenderTask:
     color_space: str = "Adobe RGB"
     gpu_enabled: bool = True
     readback_metrics: bool = True
+    skip_crop: bool = False
 
 
 @dataclass(frozen=True)
@@ -101,6 +102,7 @@ class RenderWorker(QObject):
                 render_size_ref=task.preview_size,
                 prefer_gpu=task.gpu_enabled,
                 readback_metrics=task.readback_metrics,
+                skip_crop=task.skip_crop,
             )
 
             if task.icc_profile_path and isinstance(result, GPUTexture):

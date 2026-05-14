@@ -2,6 +2,7 @@
 Tests for the new ensemble autocrop algorithms.
 Each algorithm is tested against synthetic film-frame images.
 """
+
 import numpy as np
 import pytest
 from negpy.features.geometry.algos import hough, ransac, flood
@@ -35,12 +36,16 @@ def _make_trapezoidal_frame(
     """Frame with slight keystone (left side shifted up, right side shifted down)."""
     luma = np.full((img_h, img_w), rebate_luma, dtype=np.float32)
     import cv2
-    pts = np.array([
-        [90, 60 - skew_px],
-        [810, 60 + skew_px],
-        [810, 540 + skew_px],
-        [90, 540 - skew_px],
-    ], dtype=np.int32)
+
+    pts = np.array(
+        [
+            [90, 60 - skew_px],
+            [810, 60 + skew_px],
+            [810, 540 + skew_px],
+            [90, 540 - skew_px],
+        ],
+        dtype=np.int32,
+    )
     mask = np.zeros((img_h, img_w), dtype=np.uint8)
     cv2.fillConvexPoly(mask, pts, 1)
     luma[mask == 1] = frame_luma
@@ -79,6 +84,7 @@ RATIO = "3:2"
 
 # ---- MIR utility tests ----
 
+
 def test_mir_axis_aligned_square():
     """MIR of a rectangular quad should return close to the quad itself (before ratio)."""
     quad = np.array([[100, 50], [800, 50], [800, 550], [100, 550]], dtype=float)
@@ -111,6 +117,7 @@ def test_is_plausible_quad_accepts_valid():
 
 
 # ---- Algorithm tests on synthetic frames ----
+
 
 @pytest.mark.parametrize("algo_module", [hough, ransac, flood])
 def test_algo_axis_aligned_frame(algo_module):
@@ -152,6 +159,7 @@ def test_algo_undetectable_falls_back(algo_module):
 
 # ---- Ensemble tests ----
 
+
 def test_ensemble_picks_winner():
     luma = _make_frame()
     h, w = luma.shape
@@ -180,6 +188,7 @@ def test_ensemble_black_image_does_not_crash():
 def test_full_get_autocrop_coords_integration():
     """Integration: get_autocrop_coords returns a valid 3:2 crop on a synthetic frame."""
     from negpy.features.geometry.logic import get_autocrop_coords
+
     img = np.stack([_make_frame()] * 3, axis=-1)
     roi = get_autocrop_coords(img, offset_px=0, target_ratio_str="3:2")
     assert _roi_nonempty(roi)

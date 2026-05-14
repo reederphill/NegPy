@@ -5,6 +5,7 @@
 .python-version
 .vscode
 .coverage
+.serena
 
 
 # Electron & Packaging

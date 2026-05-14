@@ -1,6 +1,7 @@
 """
 Algorithm 3: Flood-Fill Rebate Segmentation + Polygon Contour.
 """
+
 from typing import Optional, Tuple
 import numpy as np
 import cv2
@@ -23,7 +24,7 @@ def _border_flood_mask(binary: np.ndarray) -> np.ndarray:
     fill_val = 2
     cv2.floodFill(flood, None, seed, fill_val)
     # 'rebate' = pixels that were dark AND reached by flood
-    rebate_padded = (flood == fill_val)
+    rebate_padded = flood == fill_val
     return rebate_padded[1:-1, 1:-1]
 
 
@@ -105,7 +106,7 @@ def detect(
     # Denoise with median filter
     binary = cv2.medianBlur(binary, 5)
 
-    dark_mask = (binary == 0)
+    dark_mask = binary == 0
 
     # Flood-fill from borders to find rebate
     rebate = _border_flood_mask(dark_mask.astype(np.uint8))
@@ -164,12 +165,16 @@ def detect(
         if len(set(missing_sides)) == 1:
             # One full side is cut off — infer it
             missing_side = list(set(missing_sides))[0]
-            interior_pts = [p for p in quad if not (
-                (missing_side == "top" and p[1] <= border_thresh) or
-                (missing_side == "bottom" and p[1] >= img_h - border_thresh) or
-                (missing_side == "left" and p[0] <= border_thresh) or
-                (missing_side == "right" and p[0] >= img_w - border_thresh)
-            )]
+            interior_pts = [
+                p
+                for p in quad
+                if not (
+                    (missing_side == "top" and p[1] <= border_thresh)
+                    or (missing_side == "bottom" and p[1] >= img_h - border_thresh)
+                    or (missing_side == "left" and p[0] <= border_thresh)
+                    or (missing_side == "right" and p[0] >= img_w - border_thresh)
+                )
+            ]
             if len(interior_pts) >= 2:
                 quad = _infer_missing_edge_quad(interior_pts, missing_side, img_h, img_w, target_ratio_str)
 

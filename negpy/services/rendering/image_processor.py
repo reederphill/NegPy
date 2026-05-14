@@ -68,6 +68,7 @@ class ImageProcessor:
         metrics: Optional[Dict[str, Any]] = None,
         prefer_gpu: bool = True,
         readback_metrics: bool = True,
+        skip_crop: bool = False,
     ) -> Tuple[Any, Dict[str, Any]]:
         """
         Executes rendering pipeline. Returns result (ndarray/GPUTexture) and metrics.
@@ -91,6 +92,7 @@ class ImageProcessor:
                     scale_factor=scale_factor,
                     render_size_ref=render_size_ref,
                     readback_metrics=readback_metrics,
+                    skip_crop=skip_crop,
                 )
                 context.metrics.update(gpu_metrics)
                 return processed, context.metrics
@@ -98,7 +100,7 @@ class ImageProcessor:
                 logger.exception("Hardware acceleration failed, falling back to CPU")
                 context.metrics["gpu_fallback"] = True
 
-        processed = self.engine_cpu.process(img, settings, source_hash, context)
+        processed = self.engine_cpu.process(img, settings, source_hash, context, skip_crop=skip_crop)
         return processed, context.metrics
 
     def buffer_to_pil(self, buffer: Any, settings: WorkspaceConfig, bit_depth: int = 8) -> Image.Image:

@@ -228,6 +228,7 @@ class GPUEngine:
         render_size_ref: Optional[float] = None,
         source_hash: Optional[str] = None,
         readback_metrics: bool = True,
+        skip_crop: bool = False,
     ) -> Tuple[Any, Dict[str, Any]]:
         """
         Executes the full pipeline, returning a GPU texture and associated metrics.
@@ -263,6 +264,13 @@ class GPUEngine:
             crop_w, crop_h = w, h
             actual_full_dims = full_dims
             roi = (0, h, 0, w)
+        elif skip_crop:
+            rot = settings.geometry.rotation % 4
+            w_rot, h_rot = (h, w) if rot in (1, 3) else (w, h)
+            actual_full_dims, orig_shape = (w_rot, h_rot), (h, w)
+            x1, y1 = 0, 0
+            roi = (0, h_rot, 0, w_rot)
+            crop_w, crop_h = w_rot, h_rot
         else:
             rot = settings.geometry.rotation % 4
             w_rot, h_rot = (h, w) if rot in (1, 3) else (w, h)
@@ -619,7 +627,7 @@ class GPUEngine:
                     flip_h=settings.geometry.flip_horizontal,
                     flip_v=settings.geometry.flip_vertical,
                     autocrop=True,
-                    autocrop_params={"roi": roi} if roi else None,
+                    autocrop_params={"roi": roi} if (roi and not skip_crop) else None,
                 )
             except Exception as e:
                 logger.error(f"GPU Engine metrics error: {e}")

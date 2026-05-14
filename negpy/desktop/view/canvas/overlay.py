@@ -49,6 +49,7 @@ class CanvasOverlay(QWidget):
         self.pan_y: float = 0.0
 
         self._view_rect: QRectF = QRectF()
+        self._show_analysis_buffer: bool = False
 
         self.setMouseTracking(True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -61,6 +62,10 @@ class CanvasOverlay(QWidget):
         self.pan_x = px
         self.pan_y = py
         self._recalc_view_rect()
+        self.update()
+
+    def set_show_analysis_buffer(self, show: bool) -> None:
+        self._show_analysis_buffer = show
         self.update()
 
     def set_tool_mode(self, mode: ToolMode) -> None:
@@ -178,6 +183,28 @@ class CanvasOverlay(QWidget):
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.setPen(pen)
             painter.drawRect(rect)
+
+        if self._show_analysis_buffer:
+            buf = self.state.config.process.analysis_buffer
+            inset_x = self._view_rect.width() * buf
+            inset_y = self._view_rect.height() * buf
+            analysis_rect = self._view_rect.adjusted(inset_x, inset_y, -inset_x, -inset_y)
+
+            vr = self._view_rect
+            painter.setBrush(QColor(0, 0, 0, 50))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRect(vr.intersected(QRectF(vr.x(), vr.y(), vr.width(), analysis_rect.y() - vr.y())))
+            painter.drawRect(vr.intersected(QRectF(vr.x(), analysis_rect.bottom(), vr.width(), vr.bottom() - analysis_rect.bottom())))
+            painter.drawRect(vr.intersected(QRectF(vr.x(), analysis_rect.y(), analysis_rect.x() - vr.x(), analysis_rect.height())))
+            painter.drawRect(
+                vr.intersected(QRectF(analysis_rect.right(), analysis_rect.y(), vr.right() - analysis_rect.right(), analysis_rect.height()))
+            )
+
+            pen = QPen(QColor(255, 255, 255, 180), 1, Qt.PenStyle.DashLine)
+            pen.setCosmetic(True)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(pen)
+            painter.drawRect(analysis_rect)
 
         if self._tool_mode != ToolMode.NONE and visible_rect.contains(self._mouse_pos):
             if self._tool_mode == ToolMode.DUST_PICK:
