@@ -12,9 +12,10 @@ struct RetouchUniforms {
 };
 
 struct ManualSpot {
-    pos: vec2<f32>,
-    radius: f32,
-    pad: f32,
+    pos:        vec2<f32>,
+    source_pos: vec2<f32>,
+    radius:     f32,
+    pad:        f32,
 };
 
 @group(0) @binding(0) var input_tex: texture_2d<f32>;
@@ -228,75 +229,5 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    if (params.ir_enabled == 1u) {
-        let ir_scale = max(1.0, params.scale_factor);
-        let ir_exp_rad = i32(clamp(params.ir_inpaint_radius * ir_scale, 1.0, 16.0));
-        let ir_p_rad = ir_exp_rad + i32(max(2.0, 3.0 * ir_scale));
-
-        var ir_min_d2 = 1.0e9;
-        for (var yoff = -ir_exp_rad; yoff <= ir_exp_rad; yoff++) {
-            for (var xoff = -ir_exp_rad; xoff <= ir_exp_rad; xoff++) {
-                let nc = clamp(coords + vec2<i32>(xoff, yoff), vec2<i32>(0), idims - 1);
-                if (textureLoad(ir_tex, nc, 0).r < params.ir_threshold) {
-                    let d2 = f32(xoff*xoff + yoff*yoff);
-                    if (d2 < ir_min_d2) { ir_min_d2 = d2; }
-                }
-            }
-        }
-
-        if (ir_min_d2 < f32(ir_exp_rad * ir_exp_rad + 1)) {
-            let dist = sqrt(ir_min_d2);
-            var ir_feather = clamp(1.0 - dist / f32(ir_exp_rad + 1), 0.0, 1.0);
-            ir_feather = ir_feather * ir_feather * (3.0 - 2.0 * ir_feather);
-
-            var ir_sr = array<f32, 8>(); var ir_sg = array<f32, 8>(); var ir_sb = array<f32, 8>(); var ir_sl = array<f32, 8>();
-            let ir_dxs = array<i32, 8>(-ir_p_rad, ir_p_rad, 0, 0, -ir_p_rad, -ir_p_rad, ir_p_rad, ir_p_rad);
-            let ir_dys = array<i32, 8>(0, 0, -ir_p_rad, ir_p_rad, -ir_p_rad, ir_p_rad, -ir_p_rad, ir_p_rad);
-            for (var i = 0; i < 8; i++) {
-                let sc = clamp(coords + vec2<i32>(ir_dxs[i], ir_dys[i]), vec2<i32>(0), idims - 1);
-                let pix = textureLoad(input_tex, sc, 0).rgb;
-                ir_sr[i] = pix.r; ir_sg[i] = pix.g; ir_sb[i] = pix.b;
-                ir_sl[i] = dot(pix, vec3<f32>(0.2126, 0.7152, 0.0722));
-            }
-            for (var i = 0; i < 7; i++) {
-                for (var j = i + 1; j < 8; j++) {
-                    if (ir_sl[i] > ir_sl[j]) {
-                        let tl = ir_sl[i]; ir_sl[i] = ir_sl[j]; ir_sl[j] = tl;
-                        let tr = ir_sr[i]; ir_sr[i] = ir_sr[j]; ir_sr[j] = tr;
-                        let tg = ir_sg[i]; ir_sg[i] = ir_sg[j]; ir_sg[j] = tg;
-                        let tb = ir_sb[i]; ir_sb[i] = ir_sb[j]; ir_sb[j] = tb;
-                    }
-                }
-            }
-            let ir_healed = vec3<f32>(
-                (ir_sr[2] + ir_sr[3] + ir_sr[4] + ir_sr[5]) / 4.0,
-                (ir_sg[2] + ir_sg[3] + ir_sg[4] + ir_sg[5]) / 4.0,
-                (ir_sb[2] + ir_sb[3] + ir_sb[4] + ir_sb[5]) / 4.0,
-            );
-            res = mix(res, ir_healed, ir_feather);
-        }
-    }
-
-    for (var i = 0u; i < params.num_manual_spots; i++) {
-        let spot = manual_spots[i];
-        let d = distance(global_uv, spot.pos);
-        if (d < spot.radius) {
-            let pi = 3.14159265;
-            let full_f = vec2<f32>(f32(params.full_dims.x), f32(params.full_dims.y));
-            let delta = global_uv - spot.pos;
-            let pixel_angle = atan2(delta.y, delta.x);
-            let seed = global_coords + f32(i) * 7.77;
-            var heal = vec3<f32>(0.0);
-            for(var s = 0.0; s < 3.0; s += 1.0) {
-                let jitter = (hash(seed + s * 0.555) - 0.5) * (pi * 0.2);
-                let p_off = vec2<f32>(cos(pixel_angle + jitter), sin(pixel_angle + jitter)) * (spot.radius * 0.95);
-                let pc = vec2<i32>((spot.pos + p_off) * full_f) - params.global_offset;
-                heal += min3x3(pc, idims);
-            }
-            let healed_val = heal / 3.0;
-            let luma_mask = smoothstep(0.04, 0.12, dot(res, vec3<f32>(0.2126, 0.7152, 0.0722)) - dot(healed_val, vec3<f32>(0.2126, 0.7152, 0.0722)));
-            res = mix(res, healed_val, smoothstep(spot.radius, spot.radius * 0.8, d) * luma_mask);
-        }
-    }
     textureStore(output_tex, coords, vec4<f32>(res, 1.0));
 }
