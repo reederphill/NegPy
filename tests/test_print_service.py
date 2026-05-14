@@ -107,3 +107,41 @@ def test_target_px_ignores_print_size_and_dpi():
     out_b, _ = PrintService.apply_layout(img, b)
     assert out_a.shape == out_b.shape
     assert max(out_a.shape[:2]) == 800
+
+
+def test_paper_dims_from_long_edge_flips_ratio_for_portrait_content():
+    # Portrait content (h > w) with a landscape ratio → paper should be portrait
+    paper_w, paper_h = PrintService.paper_dims_from_long_edge(1000, "3:2", img_w=400, img_h=600)
+    assert paper_h > paper_w, f"Expected portrait paper, got {paper_w}x{paper_h}"
+    assert abs(paper_w / paper_h - 2 / 3) < 0.01
+
+
+def test_paper_dims_from_long_edge_flips_ratio_for_landscape_content():
+    # Landscape content (w > h) with a portrait ratio → paper should be landscape
+    paper_w, paper_h = PrintService.paper_dims_from_long_edge(1000, "2:3", img_w=600, img_h=400)
+    assert paper_w > paper_h, f"Expected landscape paper, got {paper_w}x{paper_h}"
+    assert abs(paper_w / paper_h - 3 / 2) < 0.01
+
+
+def test_apply_layout_portrait_image_landscape_ratio_gives_portrait_paper():
+    # Rotating to portrait then exporting with "3:2" should produce portrait output
+    img = np.zeros((600, 400, 3), dtype=np.float32)  # portrait
+    config = ExportConfig(
+        export_resolution_mode=ExportResolutionMode.PRINT.value,
+        export_print_size=15.0,
+        export_dpi=200,
+        paper_aspect_ratio="3:2",
+    )
+    result, _ = PrintService.apply_layout(img, config)
+    assert result.shape[0] > result.shape[1], f"Expected portrait output, got shape {result.shape}"
+
+
+def test_apply_layout_original_mode_portrait_content_landscape_ratio_gives_portrait_paper():
+    # ORIGINAL export mode: portrait content with "3:2" ratio should produce portrait paper
+    img = np.zeros((600, 400, 3), dtype=np.float32)  # portrait
+    config = ExportConfig(
+        export_resolution_mode=ExportResolutionMode.ORIGINAL.value,
+        paper_aspect_ratio="3:2",
+    )
+    result, _ = PrintService.apply_layout(img, config)
+    assert result.shape[0] > result.shape[1], f"Expected portrait output, got shape {result.shape}"

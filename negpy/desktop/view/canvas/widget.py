@@ -29,6 +29,7 @@ class ImageCanvas(QWidget):
     zoom_changed = pyqtSignal(float)
     cursor_position_changed = pyqtSignal(float, float)
     cursor_left_canvas = pyqtSignal()
+    wb_region_sampled = pyqtSignal(float, float, float, bool)
 
     def __init__(self, state: AppState, parent=None):
         super().__init__(parent)
@@ -73,6 +74,7 @@ class ImageCanvas(QWidget):
         self.overlay.crop_translated.connect(self.crop_translated.emit)
         self.overlay.cursor_moved.connect(self.cursor_position_changed.emit)
         self.overlay.cursor_left.connect(self.cursor_left_canvas.emit)
+        self.overlay.wb_region_sampled.connect(self.wb_region_sampled.emit)
 
         # Pixel readout overlay — absolute child, not in layout
         self.pixel_readout_overlay = PixelReadoutOverlay(self)

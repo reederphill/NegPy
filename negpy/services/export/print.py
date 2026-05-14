@@ -54,6 +54,13 @@ class PrintService:
         return export_settings.export_dpi
 
     @staticmethod
+    def _orient_ratio(ratio: float, img_w: int, img_h: int) -> float:
+        """Flip ratio so paper orientation matches content orientation."""
+        if (img_h > img_w) == (ratio > 1.0):  # portrait content ↔ landscape ratio, or vice versa
+            return 1.0 / ratio
+        return ratio
+
+    @staticmethod
     def paper_dims_from_long_edge(long_edge_px: int, aspect_ratio_str: str, img_w: int, img_h: int) -> Tuple[int, int]:
         """Paper dims in pixels given a paper long edge and aspect ratio."""
         if aspect_ratio_str == AspectRatio.ORIGINAL:
@@ -67,6 +74,8 @@ class PrintService:
             ratio = w_r / h_r
         except (ValueError, ZeroDivisionError):
             ratio = 1.0
+
+        ratio = PrintService._orient_ratio(ratio, img_w, img_h)
 
         if ratio >= 1.0:
             paper_w = long_edge_px
@@ -110,6 +119,8 @@ class PrintService:
                     paper_ratio = w_r / h_r
                 except Exception:
                     paper_ratio = img_aspect
+
+                paper_ratio = PrintService._orient_ratio(paper_ratio, img_w, img_h)
 
                 min_paper_w = target_w + 2 * border_px
                 min_paper_h = target_h + 2 * border_px

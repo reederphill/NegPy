@@ -895,6 +895,8 @@ class GPUEngine:
                 except Exception:
                     paper_ratio = cw / ch
 
+                paper_ratio = PrintService._orient_ratio(paper_ratio, cw, ch)
+
                 min_paper_w = content_w + 2 * border_px
                 min_paper_h = content_h + 2 * border_px
 

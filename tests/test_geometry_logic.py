@@ -447,3 +447,56 @@ def test_detect_closest_aspect_ratio_image_dims_sanity_check():
     img[90:150, 20:340] = 0.05  # 60h × 320w ≈ 5.3:1 dark band
     ratio = detect_closest_aspect_ratio(img)
     assert ratio == "3:2"
+
+
+def test_autocrop_offset_not_doubled_by_export_scale():
+    """
+    Regression: GPU process_to_texture called get_autocrop_coords with scale_factor=export_scale
+    on a preview-sized tmp image, then scaled the ROI up by sy≈export_scale again.  This caused
+    the autocrop_offset margin to be export_scale² larger on export than on preview.
+
+    The fix: always pass scale_factor=1.0 to get_autocrop_coords from process_to_texture; the
+    sy upscale provides the correct proportional margin automatically.
+
+    This test verifies that get_autocrop_coords with scale_factor=1.0 followed by manual
+    upscaling matches scale_factor=export_scale applied directly to the full-res image.
+    """
+    # Synthetic image: bright base with dark film frame at 10–90% in each dimension.
+    h_preview, w_preview = 200, 300
+    img_preview = np.ones((h_preview, w_preview, 3), dtype=np.float32)
+    img_preview[20:180, 30:270] = 0.05
+
+    offset_px = 8
+    export_scale = 4.0
+
+    # --- GPU (fixed) path: scale_factor=1.0 on preview image, then upscale ROI ---
+    roi_preview = get_autocrop_coords(img_preview, offset_px=offset_px, scale_factor=1.0, target_ratio_str="Free")
+    y1_p, y2_p, x1_p, x2_p = roi_preview
+    y1_gpu = int(y1_p * export_scale)
+    y2_gpu = int(y2_p * export_scale)
+    x1_gpu = int(x1_p * export_scale)
+    x2_gpu = int(x2_p * export_scale)
+
+    # --- CPU (reference) path: detect directly on a proportionally upscaled image ---
+    h_full, w_full = int(h_preview * export_scale), int(w_preview * export_scale)
+    img_full = np.ones((h_full, w_full, 3), dtype=np.float32)
+    img_full[80:720, 120:1080] = 0.05  # same proportional dark region
+
+    roi_full = get_autocrop_coords(img_full, offset_px=offset_px, scale_factor=export_scale, target_ratio_str="Free")
+    y1_cpu, y2_cpu, x1_cpu, x2_cpu = roi_full
+
+    # The two paths should agree to within a few pixels (rounding differences only).
+    assert abs(y1_gpu - y1_cpu) <= 8, f"y1 mismatch: GPU={y1_gpu} CPU={y1_cpu}"
+    assert abs(y2_gpu - y2_cpu) <= 8, f"y2 mismatch: GPU={y2_gpu} CPU={y2_cpu}"
+    assert abs(x1_gpu - x1_cpu) <= 8, f"x1 mismatch: GPU={x1_gpu} CPU={x1_cpu}"
+    assert abs(x2_gpu - x2_cpu) <= 8, f"x2 mismatch: GPU={x2_gpu} CPU={x2_cpu}"
+
+    # Also verify the *old* (buggy) path — scale_factor=export_scale on preview then upscale —
+    # would have produced a significantly tighter (smaller) crop.
+    roi_buggy = get_autocrop_coords(img_preview, offset_px=offset_px, scale_factor=export_scale, target_ratio_str="Free")
+    y1_b, y2_b, x1_b, x2_b = roi_buggy
+    y1_buggy = int(y1_b * export_scale)
+    x1_buggy = int(x1_b * export_scale)
+    # Buggy path would produce a larger inset (more cropped) than the correct path.
+    assert y1_buggy > y1_cpu, "Expected buggy path to over-crop (larger y1)"
+    assert x1_buggy > x1_cpu, "Expected buggy path to over-crop (larger x1)"
