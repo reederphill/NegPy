@@ -7,7 +7,7 @@ from negpy.features.process.models import ProcessConfig
 from negpy.features.exposure.models import ExposureConfig
 from negpy.features.geometry.models import GeometryConfig
 from negpy.features.lab.models import LabConfig
-from negpy.features.retouch.models import RetouchConfig
+from negpy.features.retouch.models import RetouchConfig, RetouchSpot
 from negpy.features.toning.models import ToningConfig
 from negpy.features.finish.models import FinishConfig
 from negpy.features.metadata.models import MetadataConfig
@@ -21,6 +21,7 @@ logger = get_logger("domain.models")
 MIGRATIONS: Dict[str, str] = {
     "export_border_size": "border_size",
     "export_border_color": "border_color",
+    "manual_dust_spots": "manual_spots",
 }
 
 
@@ -119,7 +120,19 @@ class WorkspaceConfig:
         res.update(asdict(self.exposure))
         res.update(asdict(self.geometry))
         res.update(asdict(self.lab))
-        res.update(asdict(self.retouch))
+        # Serialize RetouchConfig manually so the spots list uses the compact wire
+        # format ("dx"/"dy"/"sx"/"sy"/"r") rather than the full field names that
+        # asdict() would emit — and to avoid asdict() expanding spots and then
+        # immediately overwriting the result.
+        r = self.retouch
+        retouch_dict = {
+            "dust_remove": r.dust_remove,
+            "dust_threshold": r.dust_threshold,
+            "dust_size": r.dust_size,
+            "manual_dust_size": r.manual_dust_size,
+            "manual_spots": [{"dx": s.dest_x, "dy": s.dest_y, "sx": s.source_x, "sy": s.source_y, "r": s.radius} for s in r.manual_spots],
+        }
+        res.update(retouch_dict)
         res.update(asdict(self.toning))
         res.update(asdict(self.finish))
         res.update(asdict(self.metadata))
@@ -167,12 +180,35 @@ class WorkspaceConfig:
             valid = config_cls.__dataclass_fields__.keys()
             return {k: v for k, v in d.items() if k in valid}
 
+        def deserialize_retouch(d: Dict[str, Any]) -> RetouchConfig:
+            kwargs = filter_keys(RetouchConfig, d)
+            raw_spots = kwargs.pop("manual_spots", None) or []
+            spots: list[RetouchSpot] = []
+            for entry in raw_spots:
+                if isinstance(entry, (list, tuple)) and len(entry) == 3:
+                    # Old format: [nx, ny, size] — migrate to RetouchSpot
+                    nx, ny, size = float(entry[0]), float(entry[1]), float(entry[2])
+                    spots.append(RetouchSpot(dest_x=nx, dest_y=ny, source_x=min(1.0, nx + 0.05), source_y=ny, radius=size))
+                elif isinstance(entry, dict) and "dx" in entry:
+                    spots.append(
+                        RetouchSpot(
+                            dest_x=float(entry["dx"]),
+                            dest_y=float(entry["dy"]),
+                            source_x=float(entry["sx"]),
+                            source_y=float(entry["sy"]),
+                            radius=float(entry["r"]),
+                        )
+                    )
+                else:
+                    logger.warning("Dropping unrecognized spot entry (unexpected format): %r", entry)
+            return RetouchConfig(**kwargs, manual_spots=spots)
+
         return cls(
             process=ProcessConfig(**filter_keys(ProcessConfig, data)),
             exposure=ExposureConfig(**filter_keys(ExposureConfig, data)),
             geometry=GeometryConfig(**filter_keys(GeometryConfig, data)),
             lab=LabConfig(**filter_keys(LabConfig, data)),
-            retouch=RetouchConfig(**filter_keys(RetouchConfig, data)),
+            retouch=deserialize_retouch(data),
             toning=ToningConfig(**filter_keys(ToningConfig, data)),
             finish=FinishConfig(**filter_keys(FinishConfig, data)),
             metadata=MetadataConfig(**filter_keys(MetadataConfig, data)),
