@@ -9,9 +9,10 @@ struct RetouchUniforms {
 };
 
 struct ManualSpot {
-    pos: vec2<f32>,
-    radius: f32,
-    pad: f32,
+    pos:        vec2<f32>,
+    source_pos: vec2<f32>,
+    radius:     f32,
+    pad:        f32,
 };
 
 @group(0) @binding(0) var input_tex: texture_2d<f32>;
@@ -224,26 +225,5 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    for (var i = 0u; i < params.num_manual_spots; i++) {
-        let spot = manual_spots[i];
-        let d = distance(global_uv, spot.pos);
-        if (d < spot.radius) {
-            let pi = 3.14159265;
-            let full_f = vec2<f32>(f32(params.full_dims.x), f32(params.full_dims.y));
-            let delta = global_uv - spot.pos;
-            let pixel_angle = atan2(delta.y, delta.x);
-            let seed = global_coords + f32(i) * 7.77;
-            var heal = vec3<f32>(0.0);
-            for(var s = 0.0; s < 3.0; s += 1.0) {
-                let jitter = (hash(seed + s * 0.555) - 0.5) * (pi * 0.2);
-                let p_off = vec2<f32>(cos(pixel_angle + jitter), sin(pixel_angle + jitter)) * (spot.radius * 0.95);
-                let pc = vec2<i32>((spot.pos + p_off) * full_f) - params.global_offset;
-                heal += min3x3(pc, idims);
-            }
-            let healed_val = heal / 3.0;
-            let luma_mask = smoothstep(0.04, 0.12, dot(res, vec3<f32>(0.2126, 0.7152, 0.0722)) - dot(healed_val, vec3<f32>(0.2126, 0.7152, 0.0722)));
-            res = mix(res, healed_val, smoothstep(spot.radius, spot.radius * 0.8, d) * luma_mask);
-        }
-    }
     textureStore(output_tex, coords, vec4<f32>(res, 1.0));
 }

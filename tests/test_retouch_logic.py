@@ -1,3 +1,4 @@
+import pytest
 import numpy as np
 from negpy.features.retouch.logic import apply_dust_removal
 from negpy.features.retouch.models import RetouchSpot
@@ -275,3 +276,49 @@ def test_laplace_heal_tiny_radius_fallback():
     assert result.shape == img.shape
     assert result.dtype == np.float32
     assert 0.0 <= float(result.max()) <= 1.0 + 1e-5
+
+
+# ---------------------------------------------------------------------------
+# GPU heal smoke test
+# ---------------------------------------------------------------------------
+
+
+def _gpu_is_available() -> bool:
+    try:
+        from negpy.infrastructure.gpu.device import GPUDevice
+
+        return GPUDevice.get().is_available
+    except Exception:
+        return False
+
+
+@pytest.mark.skipif(not _gpu_is_available(), reason="GPU not available in this environment")
+def test_gpu_heal_pipeline_smoke():
+    """GPU pipeline with manual heal spots produces finite output without crashing."""
+    import dataclasses
+
+    import numpy as np
+
+    from negpy.domain.models import WorkspaceConfig
+    from negpy.features.retouch.models import RetouchConfig, RetouchSpot
+    from negpy.services.rendering.gpu_engine import GPUEngine
+
+    img = np.random.default_rng(1).uniform(0.2, 0.8, (64, 64, 3)).astype(np.float32)
+    img[28:36, 28:36] = 0.95  # bright defect
+
+    spot = RetouchSpot(dest_x=0.5, dest_y=0.5, source_x=0.2, source_y=0.2, radius=6.0)
+    settings = dataclasses.replace(
+        WorkspaceConfig(),
+        retouch=RetouchConfig(manual_spots=[spot], dust_remove=False),
+    )
+
+    engine = GPUEngine()
+    result, _ = engine.process(img, settings, scale_factor=1.0)
+
+    assert result is not None
+    assert np.all(np.isfinite(result)), "GPU heal output contains non-finite values"
+    assert result.shape[0] > 0
+    # The bright defect at rows 28-36, cols 28-36 should be attenuated
+    defect_before = float(img[28:36, 28:36].mean())
+    defect_after = float(result[28:36, 28:36].mean())
+    assert defect_after < defect_before, f"GPU heal did not attenuate defect: {defect_before:.3f} → {defect_after:.3f}"

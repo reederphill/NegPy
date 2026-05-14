@@ -38,6 +38,9 @@ TILE_HALO = 32
 TILING_THRESHOLD_PX = 12_000_000
 HISTOGRAM_BINS = 256
 METRICS_BUFFER_SIZE = 4096
+HEAL_SPOT_MAX_PX = 512  # max bounding-box edge length for any heal spot
+MAX_HEAL_SPOTS = 512  # matches the retouch storage buffer cap
+HEAL_PARAMS_SIZE = 64  # bytes — 16 × i32 (see HealParams struct)
 
 
 def _downsample_for_analysis(img: np.ndarray, max_size: int) -> np.ndarray:
@@ -65,6 +68,10 @@ class GPUEngine:
             "clahe_cdf": get_resource_path(os.path.join("negpy", "features", "lab", "shaders", "clahe_cdf.wgsl")),
             "clahe_apply": get_resource_path(os.path.join("negpy", "features", "lab", "shaders", "clahe_apply.wgsl")),
             "retouch": get_resource_path(os.path.join("negpy", "features", "retouch", "shaders", "retouch.wgsl")),
+            "heal_copy": get_resource_path(os.path.join("negpy", "features", "retouch", "shaders", "heal_copy.wgsl")),
+            "heal_init": get_resource_path(os.path.join("negpy", "features", "retouch", "shaders", "heal_init.wgsl")),
+            "heal_jacobi": get_resource_path(os.path.join("negpy", "features", "retouch", "shaders", "heal_jacobi.wgsl")),
+            "heal_composite": get_resource_path(os.path.join("negpy", "features", "retouch", "shaders", "heal_composite.wgsl")),
             "lab": get_resource_path(os.path.join("negpy", "features", "lab", "shaders", "lab.wgsl")),
             "toning": get_resource_path(os.path.join("negpy", "features", "toning", "shaders", "toning.wgsl")),
             "finish": get_resource_path(os.path.join("negpy", "features", "finish", "shaders", "finish.wgsl")),
@@ -177,7 +184,22 @@ class GPUEngine:
             65536,
             wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST,
         )
-        self._buffers["retouch_s"] = GPUBuffer(8192, wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST)
+        self._buffers["retouch_s"] = GPUBuffer(12288, wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST)
+        heal_diff_bytes = HEAL_SPOT_MAX_PX * HEAL_SPOT_MAX_PX * 4 * 4  # pixels × channels × sizeof(f32)
+        heal_mask_bytes = HEAL_SPOT_MAX_PX * HEAL_SPOT_MAX_PX * 4  # pixels × sizeof(f32)
+        self._buffers["heal_diff_a"] = GPUBuffer(
+            heal_diff_bytes, wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST | wgpu.BufferUsage.COPY_SRC
+        )
+        self._buffers["heal_diff_b"] = GPUBuffer(
+            heal_diff_bytes, wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST | wgpu.BufferUsage.COPY_SRC
+        )
+        self._buffers["heal_mask"] = GPUBuffer(heal_mask_bytes, wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST)
+        # One slot per spot; stride must satisfy min_uniform_buffer_offset_alignment
+        self._heal_params_stride = max(HEAL_PARAMS_SIZE, self._alignment)
+        self._buffers["heal_params"] = GPUBuffer(
+            self._heal_params_stride * MAX_HEAL_SPOTS,
+            wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST,
+        )
         self._buffers["metrics"] = GPUBuffer(
             METRICS_BUFFER_SIZE,
             wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST,
@@ -213,6 +235,116 @@ class GPUEngine:
             "offset": idx * self._alignment,
             "size": sizes[name],
         }
+
+    def _dispatch_heal_spots(
+        self,
+        enc: Any,
+        conf: Any,
+        input_tex: Any,
+        tex_heal: Any,
+        orig_shape: Tuple[int, int],
+        global_offset: Tuple[int, int],
+        full_dims: Tuple[int, int],
+        scale_factor: float,
+        geom: Any,
+    ) -> None:
+        """Drives the per-spot heal pipeline for all manual spots.
+
+        Writes heal_params for every spot, then for each spot dispatches:
+          heal_init -> 20 x heal_jacobi (ping-pong) -> heal_composite.
+        input_tex is the retouch output (tex_ret).
+        tex_heal must already have been initialised by a heal_copy dispatch.
+        """
+        device = self.gpu.device
+        assert device is not None
+
+        diff_a = self._buffers["heal_diff_a"]
+        diff_b = self._buffers["heal_diff_b"]
+        mask = self._buffers["heal_mask"]
+
+        for spot_idx, spot in enumerate(conf.manual_spots[:MAX_HEAL_SPOTS]):
+            mx, my = map_coords_to_geometry(
+                spot.dest_x,
+                spot.dest_y,
+                orig_shape,
+                geom.rotation,
+                geom.fine_rotation,
+                geom.flip_horizontal,
+                geom.flip_vertical,
+            )
+            smx, smy = map_coords_to_geometry(
+                spot.source_x,
+                spot.source_y,
+                orig_shape,
+                geom.rotation,
+                geom.fine_rotation,
+                geom.flip_horizontal,
+                geom.flip_vertical,
+            )
+            fw, fh = full_dims
+            dest_cx = int(round(mx * fw))
+            dest_cy = int(round(my * fh))
+            src_cx = int(round(smx * fw))
+            src_cy = int(round(smy * fh))
+            radius_px = min(max(1, int(round(spot.radius * scale_factor))), HEAL_SPOT_MAX_PX // 2 - 1)
+
+            bx0 = max(0, dest_cx - radius_px)
+            by0 = max(0, dest_cy - radius_px)
+            bbox_w = min(min(fw, dest_cx + radius_px + 1) - bx0, HEAL_SPOT_MAX_PX)
+            bbox_h = min(min(fh, dest_cy + radius_px + 1) - by0, HEAL_SPOT_MAX_PX)
+
+            params_bytes = self._pack_heal_params(
+                dest_center=(dest_cx, dest_cy),
+                src_center=(src_cx, src_cy),
+                radius_px=radius_px,
+                bbox_origin=(bx0, by0),
+                bbox_size=(bbox_w, bbox_h),
+                global_offset=global_offset,
+                full_dims=full_dims,
+            )
+            device.queue.write_buffer(
+                self._buffers["heal_params"].buffer,
+                spot_idx * self._heal_params_stride,
+                params_bytes,
+            )
+
+            heal_params_res = {
+                "buffer": self._buffers["heal_params"].buffer,
+                "offset": spot_idx * self._heal_params_stride,
+                "size": HEAL_PARAMS_SIZE,
+            }
+
+            # Zero diff buffers to prevent stale data from a larger prior spot
+            full_heal_size = HEAL_SPOT_MAX_PX * HEAL_SPOT_MAX_PX * 4 * 4
+            device.queue.write_buffer(self._buffers["heal_diff_a"].buffer, 0, bytearray(full_heal_size))
+            device.queue.write_buffer(self._buffers["heal_diff_b"].buffer, 0, bytearray(full_heal_size))
+
+            self._dispatch_pass(
+                enc,
+                "heal_init",
+                [(0, input_tex.view), (1, diff_a), (2, mask), (3, heal_params_res)],
+                bbox_w,
+                bbox_h,
+            )
+
+            for i in range(200):
+                src_buf, dst_buf = (diff_a, diff_b) if i % 2 == 0 else (diff_b, diff_a)
+                self._dispatch_pass(
+                    enc,
+                    "heal_jacobi",
+                    [(0, src_buf), (1, dst_buf), (2, mask), (3, heal_params_res)],
+                    bbox_w,
+                    bbox_h,
+                )
+
+            # 200 iterations is even, so final result is in diff_b
+            self._dispatch_pass(
+                enc,
+                "heal_composite",
+                [(0, input_tex.view), (1, tex_heal.view), (2, diff_b), (3, mask), (4, heal_params_res)],
+                bbox_w,
+                bbox_h,
+            )
 
     def process_to_texture(
         self,
@@ -508,18 +640,47 @@ class GPUEngine:
                     (0, prev_tex.view),
                     (1, tex_ret.view),
                     (2, self._get_uniform_binding("retouch_u")),
-                    (3, self._buffers["retouch_s"]),
                 ],
                 w_rot,
                 h_rot,
             )
+
+        # --- heal pipeline ---
+        if start_stage <= 3 and settings.retouch.manual_spots and not tiling_mode:
+            tex_heal = self._get_intermediate_texture(
+                w_rot,
+                h_rot,
+                wgpu.TextureUsage.STORAGE_BINDING | wgpu.TextureUsage.TEXTURE_BINDING,
+                "heal",
+            )
+            self._dispatch_pass(
+                enc,
+                "heal_copy",
+                [(0, tex_ret.view), (1, tex_heal.view)],
+                w_rot,
+                h_rot,
+            )
+            self._dispatch_heal_spots(
+                enc,
+                settings.retouch,
+                tex_ret,
+                tex_heal,
+                (h, w),
+                global_offset,
+                actual_full_dims,
+                scale_factor,
+                settings.geometry,
+            )
+            prev_ret = tex_heal
+        else:
+            prev_ret = tex_ret
 
         if start_stage <= 4:
             self._dispatch_pass(
                 enc,
                 "lab",
                 [
-                    (0, tex_ret.view),
+                    (0, prev_ret.view),
                     (1, tex_lab.view),
                     (2, self._get_uniform_binding("lab")),
                 ],
@@ -835,6 +996,37 @@ class GPUEngine:
             raise RuntimeError("GPU device lost")
         self.gpu.device.queue.write_buffer(self._buffers["unified_u"].buffer, 0, full_buffer)
 
+    def _pack_heal_params(
+        self,
+        dest_center: tuple[int, int],
+        src_center: tuple[int, int],
+        radius_px: int,
+        bbox_origin: tuple[int, int],
+        bbox_size: tuple[int, int],
+        global_offset: tuple[int, int],
+        full_dims: tuple[int, int],
+    ) -> bytes:
+        """Packs HealParams into 64 bytes matching the WGSL struct layout."""
+        return struct.pack(
+            "16i",
+            dest_center[0],
+            dest_center[1],
+            src_center[0],
+            src_center[1],
+            radius_px,
+            0,
+            bbox_origin[0],
+            bbox_origin[1],
+            bbox_size[0],
+            bbox_size[1],
+            global_offset[0],
+            global_offset[1],
+            full_dims[0],
+            full_dims[1],
+            0,
+            0,
+        )
+
     def _update_retouch_storage(
         self,
         conf: Any,
@@ -857,9 +1049,20 @@ class GPUEngine:
                 geom.flip_horizontal,
                 geom.flip_vertical,
             )
-            # Correctly scale radius using scale_factor
-            scaled_radius = (size * scale_factor) / max(orig_shape)
-            spot_data += struct.pack("ffff", mx, my, scaled_radius, 0.0)
+            smx, smy = map_coords_to_geometry(
+                spot.source_x,
+                spot.source_y,
+                orig_shape,
+                geom.rotation,
+                geom.fine_rotation,
+                geom.flip_horizontal,
+                geom.flip_vertical,
+            )
+            # Scale radius against the full image dimensions, not the tile dimensions,
+            # so tiled export produces the same UV-space radius as non-tiled preview.
+            radius_ref = max(full_dims) if full_dims else max(orig_shape)
+            scaled_radius = (size * scale_factor) / radius_ref
+            spot_data += struct.pack("ffffff", mx, my, smx, smy, scaled_radius, 0.0)
         if spot_data:
             self._buffers["retouch_s"].upload(np.frombuffer(spot_data, dtype=np.uint8))
 
@@ -1119,7 +1322,7 @@ class GPUEngine:
         ):
             reused_cdf = self._readback_clahe_cdf()
 
-        _, metrics_ref = self.process_to_texture(img_small, settings, scale_factor=scale_factor, clahe_cdf_override=reused_cdf)
+        _, metrics_ref = self.process_to_texture(img_small, settings, scale_factor=1.0, clahe_cdf_override=reused_cdf)
 
         global_cdfs = reused_cdf if reused_cdf is not None else self._readback_clahe_cdf()
 
@@ -1216,6 +1419,51 @@ class GPUEngine:
                 )
                 ox, oy = x1 + tx - ix1, y1 + ty - iy1
                 full_source_res[ty : ty + th, tx : tx + tw] = self._readback_downsampled(tile_res)[oy : oy + th, ox : ox + tw]
+
+        # GPU heal is skipped in tiling_mode (source/dest may span different tiles).
+        # Apply CPU Laplace heal on the assembled full-res crop instead.
+        if settings.retouch.manual_spots:
+            from negpy.features.retouch.logic import apply_dust_removal  # noqa: PLC0415
+            from negpy.features.retouch.models import RetouchSpot  # noqa: PLC0415
+
+            mapped_spots = []
+            for spot in settings.retouch.manual_spots:
+                mx, my = map_coords_to_geometry(
+                    spot.dest_x,
+                    spot.dest_y,
+                    (h, w),
+                    settings.geometry.rotation,
+                    settings.geometry.fine_rotation,
+                    settings.geometry.flip_horizontal,
+                    settings.geometry.flip_vertical,
+                )
+                smx, smy = map_coords_to_geometry(
+                    spot.source_x,
+                    spot.source_y,
+                    (h, w),
+                    settings.geometry.rotation,
+                    settings.geometry.fine_rotation,
+                    settings.geometry.flip_horizontal,
+                    settings.geometry.flip_vertical,
+                )
+                # Convert full-image normalised coords → crop-normalised coords
+                mapped_spots.append(
+                    RetouchSpot(
+                        dest_x=float(np.clip((mx * w_rot - x1) / crop_w, 0.0, 1.0)),
+                        dest_y=float(np.clip((my * h_rot - y1) / crop_h, 0.0, 1.0)),
+                        source_x=float(np.clip((smx * w_rot - x1) / crop_w, 0.0, 1.0)),
+                        source_y=float(np.clip((smy * h_rot - y1) / crop_h, 0.0, 1.0)),
+                        radius=spot.radius,
+                    )
+                )
+            full_source_res = apply_dust_removal(
+                full_source_res,
+                dust_remove=False,
+                dust_threshold=settings.retouch.dust_threshold,
+                dust_size=settings.retouch.dust_size,
+                manual_spots=mapped_spots,
+                scale_factor=scale_factor,
+            )
 
         scaled_content = (
             cv2.resize(full_source_res, (content_w, content_h), interpolation=cv2.INTER_LINEAR)
