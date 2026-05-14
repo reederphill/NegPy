@@ -472,16 +472,48 @@ def get_autocrop_coords(
     assist_luma: Optional[float] = None,
 ) -> ROI:
     """
-    Detects film border via density thresholding.
+    Detects film frame using an ensemble of 3 algorithms (Hough, RANSAC, flood-fill).
+    Falls back to legacy density-threshold detection when all algorithms score below
+    the confidence threshold.
     """
+    from negpy.features.geometry.algos.ensemble import detect as ensemble_detect
+    from negpy.kernel.image.validation import ensure_image as _ensure
+
     h, w = img.shape[:2]
-    roi = _find_autocrop_roi_from_contours(img)
-    if roi is None:
-        roi = _get_threshold_autocrop_coords(img, target_ratio_str, detect_res, assist_luma)
+    det_scale = detect_res / max(h, w)
+    d_h, d_w = int(h * det_scale), int(w * det_scale)
+    img_small = cv2.resize(img, (d_w, d_h), interpolation=cv2.INTER_AREA)
+    lum = get_luminance(_ensure(img_small))
+
+    roi_det, algo = ensemble_detect(lum, d_h, d_w, target_ratio_str, assist_luma)
+
+    if algo != "legacy":
+        # Map detected ROI from detection resolution back to original image pixels
+        y1_d, y2_d, x1_d, x2_d = roi_det
+        y1 = y1_d / det_scale
+        y2 = y2_d / det_scale
+        x1 = x1_d / det_scale
+        x2 = x2_d / det_scale
+        margin = offset_px * scale_factor
+        roi = apply_margin_to_roi((y1, y2, x1, x2), h, w, margin)
+        return enforce_roi_aspect_ratio(roi, h, w, target_ratio_str)
+
+    # Legacy fallback: row/column luminance thresholding
+    threshold = 0.96
+    if assist_luma is not None:
+        threshold = float(np.clip(assist_luma - 0.02, 0.5, 0.98))
+
+    rows_det = np.where(np.mean(lum, axis=1) < threshold)[0]
+    cols_det = np.where(np.mean(lum, axis=0) < threshold)[0]
+
+    if len(rows_det) < 10 or len(cols_det) < 10:
+        return 0, h, 0, w
+
+    y1, y2 = rows_det[0] / det_scale, rows_det[-1] / det_scale
+    x1, x2 = cols_det[0] / det_scale, cols_det[-1] / det_scale
 
     margin = (2 + offset_px) * scale_factor
     roi = apply_margin_to_roi(roi, h, w, margin)
-
     return enforce_roi_aspect_ratio(roi, h, w, target_ratio_str)
 
 
