@@ -281,7 +281,7 @@ class ActionToolbar(QWidget):
 
         geo = self.session.state.config.geometry
         # Pipeline applies rotate-then-flip; a single mirror inverts rotation handedness.
-        if geo.flip_horizontal != geo.flip_vertical:
+        if geo.flip_horizontal ^ geo.flip_vertical:
             direction = -direction
         new_rot = (geo.rotation + direction) % 4
         new_geo = replace(geo, rotation=new_rot)

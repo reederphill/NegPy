@@ -140,6 +140,7 @@ class AppController(QObject):
         self.canvas.zoom_changed.connect(self.zoom_changed.emit)
         self.canvas.cursor_position_changed.connect(self.on_cursor_moved)
         self.canvas.cursor_left_canvas.connect(self.on_cursor_left)
+        self.canvas.wb_region_sampled.connect(self._handle_wb_region)
 
         from negpy.desktop.view.canvas.toolbar import CANVAS_COLORS
 
@@ -284,6 +285,9 @@ class AppController(QObject):
         self.state.preview_raw = None
         self.state.original_res = (0, 0)
 
+        if self.canvas is not None:
+            self.canvas.overlay.clear_wb_circle()
+
         self.preview_load_requested.emit(
             PreviewLoadTask(
                 file_path=file_path,
@@ -307,9 +311,7 @@ class AppController(QObject):
             self.load_file(self.state.current_file_path, preserve_zoom=True)
 
     def handle_canvas_clicked(self, nx: float, ny: float) -> None:
-        if self.state.active_tool == ToolMode.WB_PICK:
-            self._handle_wb_pick(nx, ny)
-        elif self.state.active_tool == ToolMode.DUST_PICK:
+        if self.state.active_tool == ToolMode.DUST_PICK:
             self._handle_dust_pick(nx, ny)
 
     def set_active_tool(self, mode: ToolMode) -> None:
@@ -318,7 +320,7 @@ class AppController(QObject):
         self.tool_sync_requested.emit()
 
         if mode == ToolMode.CROP_MANUAL:
-            self._fit_on_next_render = True
+            self.zoom_requested.emit(1.0)
             self.request_render()
         elif was_crop:
             self.request_render()
@@ -348,7 +350,7 @@ class AppController(QObject):
         self.session.update_config(replace(self.state.config, geometry=new_geo, process=new_proc))
         self.state.active_tool = ToolMode.NONE
         self.tool_sync_requested.emit()
-        self._fit_on_next_render = True
+        self.zoom_requested.emit(1.0)
         self.request_render()
 
     def handle_crop_translated(self, nx1: float, ny1: float, nx2: float, ny2: float) -> None:
@@ -464,9 +466,10 @@ class AppController(QObject):
         )
         self.request_render()
 
-    def _handle_wb_pick(self, nx: float, ny: float) -> None:
+    def _handle_wb_region(self, cx_n: float, cy_n: float, radius_n: float, commit: bool = True) -> None:
         """
-        Samples color from viewport coordinates and updates WB shifts to neutralize.
+        Samples color from a circular viewport region and updates WB shifts to neutralize.
+        During drag commit=False (live preview, no history). commit=True saves to history.
         """
         with self.state.metrics_lock:
             metrics = dict(self.state.last_metrics)
@@ -481,38 +484,43 @@ class AppController(QObject):
             return
 
         roi = metrics.get("active_roi")
-        radius = 4
 
         if isinstance(img, GPUTexture):
             h, w = img.height, img.width
-            if roi and is_log:
-                ry1, ry2, rx1, rx2 = roi
-                center_y = int(np.clip(ry1 + ny * (ry2 - ry1), 0, h - 1))
-                center_x = int(np.clip(rx1 + nx * (rx2 - rx1), 0, w - 1))
-            else:
-                center_y = int(np.clip(ny * h, 0, h - 1))
-                center_x = int(np.clip(nx * w, 0, w - 1))
-            x0 = max(center_x - radius, 0)
-            y0 = max(center_y - radius, 0)
-            rw = min(center_x + radius, w) - x0
-            rh = min(center_y + radius, h) - y0
-            sampled = img.readback_region(x0, y0, rw, rh).mean(axis=(0, 1))
         elif isinstance(img, np.ndarray):
             h, w = img.shape[:2]
-            if roi and is_log:
-                ry1, ry2, rx1, rx2 = roi
-                center_y = int(np.clip(ry1 + ny * (ry2 - ry1), 0, h - 1))
-                center_x = int(np.clip(rx1 + nx * (rx2 - rx1), 0, w - 1))
-            else:
-                center_y = int(np.clip(ny * h, 0, h - 1))
-                center_x = int(np.clip(nx * w, 0, w - 1))
-            y0 = max(center_y - radius, 0)
-            y1_ = min(center_y + radius, h)
-            x0 = max(center_x - radius, 0)
-            x1_ = min(center_x + radius, w)
-            sampled = img[y0:y1_, x0:x1_].mean(axis=(0, 1))
         else:
             return
+
+        if roi and is_log:
+            ry1, ry2, rx1, rx2 = roi
+            center_y = int(np.clip(ry1 + cy_n * (ry2 - ry1), 0, h - 1))
+            center_x = int(np.clip(rx1 + cx_n * (rx2 - rx1), 0, w - 1))
+            r_img = max(1, int(radius_n * (rx2 - rx1)))
+        else:
+            center_y = int(np.clip(cy_n * h, 0, h - 1))
+            center_x = int(np.clip(cx_n * w, 0, w - 1))
+            r_img = max(1, int(radius_n * w))
+
+        x0 = max(center_x - r_img, 0)
+        y0 = max(center_y - r_img, 0)
+        x1 = min(center_x + r_img + 1, w)
+        y1 = min(center_y + r_img + 1, h)
+
+        if isinstance(img, GPUTexture):
+            patch = img.readback_region(x0, y0, x1 - x0, y1 - y0)
+        else:
+            patch = img[y0:y1, x0:x1]
+
+        ph, pw = patch.shape[:2]
+        ys = np.arange(ph) - (center_y - y0)
+        xs = np.arange(pw) - (center_x - x0)
+        xx, yy = np.meshgrid(xs, ys)
+        mask = (xx**2 + yy**2) <= r_img**2
+        masked = patch[mask]
+        if len(masked) == 0:
+            return
+        sampled = masked.mean(axis=0)
 
         exp = self.state.config.exposure
         if is_log:
@@ -529,8 +537,10 @@ class AppController(QObject):
             wb_magenta=float(np.clip(new_m, -1.0, 1.0)),
             wb_yellow=float(np.clip(new_y, -1.0, 1.0)),
         )
-        self.session.update_config(replace(self.state.config, exposure=new_exp), persist=True, record_history=True)
+        self.session.update_config(replace(self.state.config, exposure=new_exp), persist=commit, record_history=commit)
         self.request_render()
+        if commit:
+            self.set_active_tool(ToolMode.NONE)
 
     def request_batch_normalization(self) -> None:
         """

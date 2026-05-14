@@ -14,6 +14,10 @@ from negpy.kernel.system.config import APP_CONFIG
 from negpy.services.view.coordinate_mapping import CoordinateMapping
 
 
+_WB_MIN_RADIUS_PX = 4.0
+_WB_MAX_RADIUS_PX = 50.0
+
+
 class CanvasOverlay(QWidget):
     """
     Transparent overlay for image interaction (crop, guides) and CPU rendering fallback.
@@ -24,6 +28,7 @@ class CanvasOverlay(QWidget):
     crop_translated = pyqtSignal(float, float, float, float)
     cursor_moved = pyqtSignal(float, float)
     cursor_left = pyqtSignal()
+    wb_region_sampled = pyqtSignal(float, float, float, bool)
 
     def __init__(self, state: AppState, parent=None):
         super().__init__(parent)
@@ -50,6 +55,10 @@ class CanvasOverlay(QWidget):
 
         self._view_rect: QRectF = QRectF()
         self._show_analysis_buffer: bool = False
+
+        self._wb_center_n: Optional[QPointF] = None
+        self._wb_radius_n: float = 0.0
+        self._wb_dragging: bool = False
 
         self.setMouseTracking(True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -79,6 +88,16 @@ class CanvasOverlay(QWidget):
             self._move_orig_rect = None
             self._move_last_emitted = None
             self._move_uv_grid = None
+        if mode != ToolMode.WB_PICK:
+            self._wb_center_n = None
+            self._wb_radius_n = 0.0
+            self._wb_dragging = False
+        self.update()
+
+    def clear_wb_circle(self) -> None:
+        self._wb_center_n = None
+        self._wb_radius_n = 0.0
+        self._wb_dragging = False
         self.update()
 
     def update_buffer(
@@ -206,6 +225,16 @@ class CanvasOverlay(QWidget):
             painter.setPen(pen)
             painter.drawRect(analysis_rect)
 
+        if self._tool_mode == ToolMode.WB_PICK and self._wb_center_n is not None and self._wb_radius_n > 0 and not self._view_rect.isEmpty():
+            cx_screen = self._view_rect.x() + self._wb_center_n.x() * self._view_rect.width()
+            cy_screen = self._view_rect.y() + self._wb_center_n.y() * self._view_rect.height()
+            r_screen = self._wb_radius_n * self._view_rect.width()
+            pen = QPen(QColor(255, 255, 255, 200), 1, Qt.PenStyle.DashLine)
+            pen.setCosmetic(True)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(pen)
+            painter.drawEllipse(QPointF(cx_screen, cy_screen), r_screen, r_screen)
+
         if self._tool_mode != ToolMode.NONE and visible_rect.contains(self._mouse_pos):
             if self._tool_mode == ToolMode.DUST_PICK:
                 self._draw_brush(painter)
@@ -280,6 +309,13 @@ class CanvasOverlay(QWidget):
                         self._move_press_raw = press_raw
                         self._move_orig_rect = orig_rect
                         self._move_last_emitted = orig_rect
+            elif self._tool_mode == ToolMode.WB_PICK:
+                center_coords = self._map_to_image_coords(event.position())
+                if center_coords and not self._view_rect.isEmpty():
+                    self._wb_dragging = True
+                    self._wb_center_n = QPointF(center_coords[0], center_coords[1])
+                    self._wb_radius_n = _WB_MIN_RADIUS_PX / self._view_rect.width()
+                    self.wb_region_sampled.emit(center_coords[0], center_coords[1], self._wb_radius_n, False)
             self.update()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
@@ -313,6 +349,15 @@ class CanvasOverlay(QWidget):
             event.accept()
             return
 
+        if self._wb_dragging and self._wb_center_n is not None and not self._view_rect.isEmpty():
+            cx_screen = self._view_rect.x() + self._wb_center_n.x() * self._view_rect.width()
+            cy_screen = self._view_rect.y() + self._wb_center_n.y() * self._view_rect.height()
+            dx = event.position().x() - cx_screen
+            dy = event.position().y() - cy_screen
+            self._wb_radius_n = min(_WB_MAX_RADIUS_PX, max(_WB_MIN_RADIUS_PX, (dx**2 + dy**2) ** 0.5)) / self._view_rect.width()
+            self.wb_region_sampled.emit(self._wb_center_n.x(), self._wb_center_n.y(), self._wb_radius_n, False)
+            self.update()
+
         if self._crop_active:
             mx = np.clip(event.position().x(), self._view_rect.left(), self._view_rect.right())
             my = np.clip(event.position().y(), self._view_rect.top(), self._view_rect.bottom())
@@ -323,10 +368,12 @@ class CanvasOverlay(QWidget):
             else:
                 try:
                     w_r, h_r = map(float, ratio_str.split(":"))
-                    target_ratio = w_r / h_r
+                    landscape_ratio = max(w_r, h_r) / min(w_r, h_r)
 
                     dx = mx - self._crop_p1.x()
                     dy = my - self._crop_p1.y()
+
+                    target_ratio = (1.0 / landscape_ratio) if abs(dy) > abs(dx) else landscape_ratio
 
                     if abs(dx) > abs(dy) * target_ratio:
                         dx = abs(dy) * target_ratio * (1 if dx >= 0 else -1)
@@ -354,6 +401,18 @@ class CanvasOverlay(QWidget):
             self._move_last_emitted = None
             self._move_uv_grid = None
             event.accept()
+            return
+
+        if self._wb_dragging:
+            cx_n = self._wb_center_n.x() if self._wb_center_n is not None else None
+            cy_n = self._wb_center_n.y() if self._wb_center_n is not None else None
+            radius_n = self._wb_radius_n
+            self._wb_dragging = False
+            self._wb_center_n = None
+            self._wb_radius_n = 0.0
+            self.update()
+            if cx_n is not None and not self._view_rect.isEmpty():
+                self.wb_region_sampled.emit(cx_n, cy_n, radius_n, True)
             return
 
         if self._crop_active:

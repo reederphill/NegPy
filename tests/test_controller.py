@@ -254,5 +254,71 @@ class TestBatchExportFiltering(unittest.TestCase):
             self.assertEqual(t.params.export.export_path, "/tmp/out")
 
 
+class TestHandleWbRegion(unittest.TestCase):
+    def setUp(self):
+        self.mock_session = MagicMock(spec=DesktopSessionManager)
+        self.mock_session.state = AppState()
+        self.mock_session.repo = MagicMock()
+        with (
+            patch("negpy.desktop.controller.RenderWorker") as mock_rw_class,
+            patch("negpy.desktop.controller.PreviewManager") as mock_pm_class,
+        ):
+            mock_rw_class.return_value = MagicMock()
+            mock_pm_class.return_value = MagicMock(spec=PreviewManager)
+            mock_pm_class.return_value.load_linear_preview.return_value = (None, (0, 0), {})
+            self.controller = AppController(self.mock_session)
+
+    def tearDown(self):
+        import gc
+        for thread in [
+            self.controller.render_thread,
+            self.controller.export_thread,
+            self.controller.thumb_thread,
+            self.controller.norm_thread,
+            self.controller.pipeline_thumb_thread,
+            self.controller.discovery_thread,
+            self.controller.preview_load_thread,
+        ]:
+            if thread is not None and thread.isRunning():
+                thread.quit()
+                thread.wait()
+        del self.controller
+        gc.collect()
+
+    def _make_image(self):
+        """20x20 image: neutral center (rows/cols 2-17), red-tinted 2px border."""
+        import numpy as np
+        img = np.ones((20, 20, 3), dtype=np.float32) * [0.8, 0.5, 0.5]
+        img[2:18, 2:18] = [0.5, 0.5, 0.5]
+        return img
+
+    def _set_image(self, img):
+        self.controller.state.last_metrics["base_positive"] = img
+        self.controller.state.last_metrics.pop("normalized_log", None)
+
+    def test_small_radius_on_neutral_center_gives_zero_wb_shift(self):
+        """Circular mask on a neutral patch should produce near-zero WB shifts."""
+        self._set_image(self._make_image())
+        # radius_n=0.2 → r_img=4px, bounding box [6:15, 6:15] — all neutral
+        self.controller._handle_wb_region(0.5, 0.5, 0.2)
+        new_config = self.mock_session.update_config.call_args.args[0]
+        self.assertAlmostEqual(new_config.exposure.wb_magenta, 0.0, places=2)
+        self.assertAlmostEqual(new_config.exposure.wb_yellow, 0.0, places=2)
+
+    def test_large_radius_including_tinted_border_produces_nonzero_wb_shift(self):
+        """Circular mask covering the red-tinted border should drive non-zero WB shifts."""
+        self._set_image(self._make_image())
+        # radius_n=0.6 → r_img=12px, covers entire 20×20 image including red border
+        self.controller._handle_wb_region(0.5, 0.5, 0.6)
+        new_config = self.mock_session.update_config.call_args.args[0]
+        self.assertNotAlmostEqual(new_config.exposure.wb_magenta, 0.0, places=2)
+
+    def test_no_image_in_metrics_is_a_noop(self):
+        """_handle_wb_region should do nothing when no image is available."""
+        self.controller.state.last_metrics.clear()
+        self.controller._handle_wb_region(0.5, 0.5, 0.2)
+        self.mock_session.update_config.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
