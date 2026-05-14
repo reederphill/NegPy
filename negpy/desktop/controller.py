@@ -27,6 +27,7 @@ from negpy.features.exposure.logic import (
     calculate_wb_shifts_from_log,
 )
 from negpy.features.geometry.logic import apply_fine_rotation, detect_closest_aspect_ratio
+from negpy.features.retouch.models import RetouchSpot
 from negpy.infrastructure.filesystem.watcher import FolderWatchService
 from negpy.infrastructure.gpu.resources import GPUTexture
 from negpy.infrastructure.storage.local_asset_store import LocalAssetStore
@@ -138,12 +139,20 @@ class AppController(QObject):
         self.canvas.zoom_changed.connect(self.zoom_changed.emit)
         self.canvas.cursor_position_changed.connect(self.on_cursor_moved)
         self.canvas.cursor_left_canvas.connect(self.on_cursor_left)
+        self.canvas.wb_region_sampled.connect(self._handle_wb_region)
+        self.canvas.overlay.spot_drag.connect(self._handle_spot_drag)
+        self.canvas.overlay.spot_release.connect(self._handle_spot_release)
+        self.canvas.overlay.spot_delete.connect(self._handle_spot_delete)
 
-        from negpy.desktop.view.canvas.toolbar import CANVAS_COLORS
-
-        idx = self.state.canvas_bg_index
-        _, (r, g, b), _ = CANVAS_COLORS[idx]
-        self.canvas.set_background_color(r, g, b)
+    def _sync_spots_to_overlay(self) -> None:
+        """Push current manual_spots list (and uv_grid) to the canvas overlay for drawing."""
+        if self.canvas is None:
+            return
+        self.canvas.overlay.set_spots(self.state.config.retouch.manual_spots)
+        with self.state.metrics_lock:
+            uv_grid = self.state.last_metrics.get("uv_grid")
+        if uv_grid is not None:
+            self.canvas.overlay.set_uv_grid(uv_grid)
 
     def on_cursor_moved(self, nx: float, ny: float) -> None:
         self._pending_cursor_nx = nx
@@ -419,24 +428,26 @@ class AppController(QObject):
         self.session.update_config(
             replace(
                 self.state.config,
-                retouch=replace(self.state.config.retouch, manual_dust_spots=[]),
+                retouch=replace(self.state.config.retouch, manual_spots=[]),
             )
         )
+        self._sync_spots_to_overlay()
         self.request_render()
 
     def undo_last_retouch(self) -> None:
         """
         Removes the most recently added dust spot.
         """
-        spots = list(self.state.config.retouch.manual_dust_spots)
+        spots = list(self.state.config.retouch.manual_spots)
         if spots:
             spots.pop()
             self.session.update_config(
                 replace(
                     self.state.config,
-                    retouch=replace(self.state.config.retouch, manual_dust_spots=spots),
+                    retouch=replace(self.state.config.retouch, manual_spots=spots),
                 )
             )
+            self._sync_spots_to_overlay()
             self.request_render()
 
     def _handle_dust_pick(self, nx: float, ny: float) -> None:
@@ -445,16 +456,134 @@ class AppController(QObject):
         if uv_grid is None:
             return
         rx, ry = CoordinateMapping.map_click_to_raw(nx, ny, uv_grid)
-        new_spots = self.state.config.retouch.manual_dust_spots + [(rx, ry, float(self.state.config.retouch.manual_dust_size))]
+        new_spots = list(self.state.config.retouch.manual_spots) + [
+            RetouchSpot(
+                dest_x=rx,
+                dest_y=ry,
+                source_x=min(1.0, rx + 0.05),
+                source_y=ry,
+                radius=float(self.state.config.retouch.manual_dust_size),
+            )
+        ]
         self.session.update_config(
             replace(
                 self.state.config,
-                retouch=replace(self.state.config.retouch, manual_dust_spots=new_spots),
+                retouch=replace(self.state.config.retouch, manual_spots=new_spots),
             )
         )
+        self._sync_spots_to_overlay()
+        self.request_render()
+
+    def _handle_spot_drag(self, idx: int, target: str, nx: float, ny: float) -> None:
+        """Update a spot's dest or source position during drag. No render — deferred to release."""
+        spots = list(self.state.config.retouch.manual_spots)
+        if idx < 0 or idx >= len(spots):
+            return
+        spot = spots[idx]
+        if target == "resize":
+            # nx is new_radius in image pixels — store directly
+            updated = replace(spot, radius=max(2.0, nx))
+        else:
+            # Convert viewport-normalized coords → raw image coords (same as _handle_dust_pick)
+            with self.state.metrics_lock:
+                uv_grid = self.state.last_metrics.get("uv_grid")
+            if uv_grid is None:
+                return
+            rx, ry = CoordinateMapping.map_click_to_raw(nx, ny, uv_grid)
+            if target == "dest":
+                updated = replace(spot, dest_x=rx, dest_y=ry)
+            elif target == "source":
+                updated = replace(spot, source_x=rx, source_y=ry)
+            else:
+                return
+        spots[idx] = updated
+        self.session.update_config(replace(self.state.config, retouch=replace(self.state.config.retouch, manual_spots=spots)))
+        self._sync_spots_to_overlay()
+        # No render — deferred to release
+
+    def _handle_spot_release(self) -> None:
+        """Trigger a full render after drag completes."""
+        self.request_render()
+
+    def _handle_spot_delete(self, idx: int) -> None:
+        """Remove a spot by index, update config and re-render."""
+        spots = list(self.state.config.retouch.manual_spots)
+        if idx < 0 or idx >= len(spots):
+            return
+        spots.pop(idx)
+        self.session.update_config(replace(self.state.config, retouch=replace(self.state.config.retouch, manual_spots=spots)))
+        self._sync_spots_to_overlay()
         self.request_render()
 
     def _handle_wb_pick(self, nx: float, ny: float) -> None:
+        """
+        Samples color from viewport coordinates and updates WB shifts to neutralize.
+        """
+        with self.state.metrics_lock:
+            metrics = dict(self.state.last_metrics)
+
+        img = metrics.get("normalized_log")
+        is_log = True
+        if img is None:
+            img = metrics.get("base_positive")
+            is_log = False
+
+        if img is None:
+            return
+
+        roi = metrics.get("active_roi")
+        radius = 4
+
+        if isinstance(img, GPUTexture):
+            h, w = img.height, img.width
+            if roi and is_log:
+                ry1, ry2, rx1, rx2 = roi
+                center_y = int(np.clip(ry1 + ny * (ry2 - ry1), 0, h - 1))
+                center_x = int(np.clip(rx1 + nx * (rx2 - rx1), 0, w - 1))
+            else:
+                center_y = int(np.clip(ny * h, 0, h - 1))
+                center_x = int(np.clip(nx * w, 0, w - 1))
+            x0 = max(center_x - radius, 0)
+            y0 = max(center_y - radius, 0)
+            rw = min(center_x + radius, w) - x0
+            rh = min(center_y + radius, h) - y0
+            sampled = img.readback_region(x0, y0, rw, rh).mean(axis=(0, 1))
+        elif isinstance(img, np.ndarray):
+            h, w = img.shape[:2]
+            if roi and is_log:
+                ry1, ry2, rx1, rx2 = roi
+                center_y = int(np.clip(ry1 + ny * (ry2 - ry1), 0, h - 1))
+                center_x = int(np.clip(rx1 + nx * (rx2 - rx1), 0, w - 1))
+            else:
+                center_y = int(np.clip(ny * h, 0, h - 1))
+                center_x = int(np.clip(nx * w, 0, w - 1))
+            y0 = max(center_y - radius, 0)
+            y1_ = min(center_y + radius, h)
+            x0 = max(center_x - radius, 0)
+            x1_ = min(center_x + radius, w)
+            sampled = img[y0:y1_, x0:x1_].mean(axis=(0, 1))
+        else:
+            return
+
+        exp = self.state.config.exposure
+        if is_log:
+            new_m, new_y = calculate_wb_shifts_from_log(sampled[:3])
+        else:
+            delta_m, delta_y = calculate_wb_shifts(sampled[:3])
+            damping = 0.4
+            new_m = exp.wb_magenta + delta_m * damping
+            new_y = exp.wb_yellow + delta_y * damping
+
+        new_exp = replace(
+            exp,
+            wb_cyan=0.0,
+            wb_magenta=float(np.clip(new_m, -1.0, 1.0)),
+            wb_yellow=float(np.clip(new_y, -1.0, 1.0)),
+        )
+        self.session.update_config(replace(self.state.config, exposure=new_exp), persist=True, record_history=True)
+        self.request_render()
+
+    def _handle_wb_region(self, cx_n: float, cy_n: float, radius_n: float, commit: bool = True) -> None:
         """
         Samples color from viewport coordinates and updates WB shifts to neutralize.
         """
@@ -802,6 +931,7 @@ class AppController(QObject):
             self.set_status("READY", 1000)
 
         self.image_updated.emit()
+        self._sync_spots_to_overlay()
 
         if should_update_thumb:
             self._update_thumbnail_from_state(force_readback=True)

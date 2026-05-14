@@ -1,17 +1,31 @@
+import math
 import sys
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QImage, QMouseEvent, QPainter, QPen
+from PyQt6.QtGui import QColor, QCursor, QImage, QKeyEvent, QMouseEvent, QPainter, QPen
 from PyQt6.QtWidgets import QWidget
 
 from negpy.desktop.converters import ImageConverter
 from negpy.desktop.session import AppState, ToolMode
 from negpy.desktop.view.styles.theme import THEME
 from negpy.features.geometry.logic import translate_manual_crop_rect
+from negpy.features.retouch.models import RetouchSpot
 from negpy.kernel.system.config import APP_CONFIG
 from negpy.services.view.coordinate_mapping import CoordinateMapping
+
+
+_WB_MIN_RADIUS_PX = 4.0
+_WB_MAX_RADIUS_PX = 50.0
+
+# Spot drawing colors
+_COLOR_SPOT_GREY = QColor(160, 160, 160)
+_COLOR_SPOT_DEST = QColor(126, 200, 227)  # blue
+_COLOR_SPOT_SOURCE = QColor(244, 162, 97)  # orange
+_RESIZE_HANDLE_PX = 5.0
+_RESIZE_HIT_PX = 6.0
+
 
 
 class CanvasOverlay(QWidget):
@@ -24,6 +38,10 @@ class CanvasOverlay(QWidget):
     crop_translated = pyqtSignal(float, float, float, float)
     cursor_moved = pyqtSignal(float, float)
     cursor_left = pyqtSignal()
+    wb_region_sampled = pyqtSignal(float, float, float, bool)
+    spot_drag = pyqtSignal(int, str, float, float)  # idx, target ("dest"/"source"/"resize"), nx, ny
+    spot_release = pyqtSignal()
+    spot_delete = pyqtSignal(int)  # idx
 
     def __init__(self, state: AppState, parent=None):
         super().__init__(parent)
@@ -50,11 +68,24 @@ class CanvasOverlay(QWidget):
 
         self._view_rect: QRectF = QRectF()
 
+        # Spot interaction state
+        self._spots: List[RetouchSpot] = []
+        self._uv_grid: Optional[np.ndarray] = None
+        self._selected_spot: Optional[int] = None
+        self._hover_spot: Optional[int] = None
+        self._drag_target: Optional[str] = None
+        self._drag_start_pos: Optional[Tuple[float, float]] = None
+
         self.setMouseTracking(True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         if sys.platform == "win32":
             self.setAttribute(Qt.WidgetAttribute.WA_StaticContents, False)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def set_transform(self, zoom: float, px: float, py: float) -> None:
         self.zoom_level = zoom
@@ -74,7 +105,20 @@ class CanvasOverlay(QWidget):
             self._move_orig_rect = None
             self._move_last_emitted = None
             self._move_uv_grid = None
+        if mode == ToolMode.DUST_PICK:
+            self.setFocus()
+        else:
+            self._selected_spot = None
+            self._hover_spot = None
+            self._drag_target = None
+            self._drag_start_pos = None
         self.update()
+
+    def set_spots(self, spots: List[RetouchSpot]) -> None:
+        """Update the list of spots to display on the overlay."""
+        self._spots = list(spots)
+        self.update()
+
 
     def update_buffer(
         self,
@@ -98,6 +142,10 @@ class CanvasOverlay(QWidget):
         super().resizeEvent(event)
         self._recalc_view_rect()
         self.update()
+
+    # ------------------------------------------------------------------
+    # Coordinate helpers
+    # ------------------------------------------------------------------
 
     def _recalc_view_rect(self) -> None:
         size = None
@@ -124,6 +172,91 @@ class CanvasOverlay(QWidget):
         center_y = (h / 2) + (self.pan_y * h)
 
         self._view_rect = QRectF(center_x - (final_w / 2), center_y - (final_h / 2), final_w, final_h)
+
+    def _map_to_image_coords(self, screen_pos: QPointF) -> Optional[Tuple[float, float]]:
+        if self._view_rect.isEmpty() or not self._view_rect.contains(screen_pos):
+            return None
+
+        nb_x = (screen_pos.x() - self._view_rect.x()) / self._view_rect.width()
+        nb_y = (screen_pos.y() - self._view_rect.y()) / self._view_rect.height()
+
+        return float(np.clip(nb_x, 0, 1)), float(np.clip(nb_y, 0, 1))
+
+    def _raw_from_screen_with_grid(self, screen_pos: QPointF, uv_grid: np.ndarray) -> Optional[Tuple[float, float]]:
+        if self._view_rect.isEmpty():
+            return None
+        nb_x = float(np.clip((screen_pos.x() - self._view_rect.x()) / self._view_rect.width(), 0.0, 1.0))
+        nb_y = float(np.clip((screen_pos.y() - self._view_rect.y()) / self._view_rect.height(), 0.0, 1.0))
+        return CoordinateMapping.map_click_to_raw(nb_x, nb_y, uv_grid)
+
+    def _spot_radius_screen(self, spot: RetouchSpot) -> float:
+        """Convert a spot's pixel radius to screen pixels using the same scale as _draw_brush."""
+        max_screen_dim = max(self._view_rect.width(), self._view_rect.height())
+        return (spot.radius / (2.0 * APP_CONFIG.preview_render_size)) * max_screen_dim
+
+    def _spot_dest_screen(self, spot: RetouchSpot) -> QPointF:
+        """Convert spot dest raw-image coords to screen coords via uv_grid when available."""
+        if self._uv_grid is not None:
+            vx, vy = CoordinateMapping.map_raw_to_view(spot.dest_x, spot.dest_y, self._uv_grid)
+        else:
+            vx, vy = spot.dest_x, spot.dest_y
+        sx = self._view_rect.x() + vx * self._view_rect.width()
+        sy = self._view_rect.y() + vy * self._view_rect.height()
+        return QPointF(sx, sy)
+
+    def _spot_source_screen(self, spot: RetouchSpot) -> QPointF:
+        """Convert spot source raw-image coords to screen coords via uv_grid when available."""
+        if self._uv_grid is not None:
+            vx, vy = CoordinateMapping.map_raw_to_view(spot.source_x, spot.source_y, self._uv_grid)
+        else:
+            vx, vy = spot.source_x, spot.source_y
+        sx = self._view_rect.x() + vx * self._view_rect.width()
+        sy = self._view_rect.y() + vy * self._view_rect.height()
+        return QPointF(sx, sy)
+
+    def _screen_distance_to_image_pixels(self, mouse_pos: QPointF, dest_screen: QPointF) -> float:
+        """Compute distance in screen pixels and convert to image pixels (spot.radius units)."""
+        dx = mouse_pos.x() - dest_screen.x()
+        dy = mouse_pos.y() - dest_screen.y()
+        screen_dist = math.sqrt(dx * dx + dy * dy)
+        # Inverse of _spot_radius_screen: radius = screen_px * 2 * preview_size / max_screen_dim
+        max_screen_dim = max(self._view_rect.width(), self._view_rect.height())
+        if max_screen_dim < 1.0:
+            return screen_dist
+        return screen_dist * (2.0 * APP_CONFIG.preview_render_size) / max_screen_dim
+
+    def _hit_test_spots(self, screen_pos: QPointF) -> Optional[Tuple[int, str]]:
+        """
+        Return (spot_index, target) for the topmost hit, or None.
+        Checks in reverse order (last placed = on top).
+        """
+        if self._view_rect.isEmpty() or not self._spots:
+            return None
+
+        def dist2(a: QPointF, b: QPointF) -> float:
+            return (a.x() - b.x()) ** 2 + (a.y() - b.y()) ** 2
+
+        for idx in reversed(range(len(self._spots))):
+            spot = self._spots[idx]
+            dest_s = self._spot_dest_screen(spot)
+            src_s = self._spot_source_screen(spot)
+            r_screen = self._spot_radius_screen(spot)
+
+            # resize handle position: right edge of dest circle
+            resize_s = QPointF(dest_s.x() + r_screen, dest_s.y())
+
+            if dist2(screen_pos, resize_s) <= _RESIZE_HIT_PX**2:
+                return (idx, "resize")
+            if dist2(screen_pos, dest_s) <= r_screen**2:
+                return (idx, "dest")
+            if dist2(screen_pos, src_s) <= r_screen**2:
+                return (idx, "source")
+
+        return None
+
+    # ------------------------------------------------------------------
+    # Paint
+    # ------------------------------------------------------------------
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
@@ -179,15 +312,90 @@ class CanvasOverlay(QWidget):
             painter.setPen(pen)
             painter.drawRect(rect)
 
+
         if self._tool_mode != ToolMode.NONE and visible_rect.contains(self._mouse_pos):
             if self._tool_mode == ToolMode.DUST_PICK:
-                self._draw_brush(painter)
+                # Only draw brush cursor if not hovering over a spot
+                if self._hover_spot is None and self._drag_start_pos is None:
+                    self._draw_brush(painter)
             else:
                 pen = QPen(QColor(255, 255, 255, 80), 1, Qt.PenStyle.DotLine)
                 pen.setCosmetic(True)
                 painter.setPen(pen)
                 painter.drawLine(QPointF(visible_rect.x(), self._mouse_pos.y()), QPointF(visible_rect.right(), self._mouse_pos.y()))
                 painter.drawLine(QPointF(self._mouse_pos.x(), visible_rect.top()), QPointF(self._mouse_pos.x(), visible_rect.bottom()))
+
+    def _draw_spots(self, painter: QPainter) -> None:
+        """Draw all spots in Darktable style."""
+        for idx, spot in enumerate(self._spots):
+            is_selected = idx == self._selected_spot
+            is_hovered = idx == self._hover_spot and not is_selected
+
+            dest_s = self._spot_dest_screen(spot)
+            src_s = self._spot_source_screen(spot)
+            r_screen = self._spot_radius_screen(spot)
+
+            if is_selected:
+                self._draw_spot_selected(painter, spot, dest_s, src_s, r_screen)
+            else:
+                alpha = 178 if is_hovered else 100
+                self._draw_spot_unselected(painter, dest_s, src_s, r_screen, alpha)
+
+    def _draw_spot_unselected(self, painter: QPainter, dest_s: QPointF, src_s: QPointF, r_screen: float, alpha: int) -> None:
+        grey = QColor(_COLOR_SPOT_GREY)
+        grey.setAlpha(alpha)
+
+        # Dashed connector line
+        pen = QPen(grey, 1.0, Qt.PenStyle.DashLine)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawLine(dest_s, src_s)
+
+        # Dest and source circles
+        pen.setStyle(Qt.PenStyle.SolidLine)
+        painter.setPen(pen)
+        painter.drawEllipse(dest_s, r_screen, r_screen)
+        painter.drawEllipse(src_s, r_screen, r_screen)
+
+        # Small center dots
+        painter.setBrush(grey)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(dest_s, 2.0, 2.0)
+        painter.drawEllipse(src_s, 2.0, 2.0)
+
+    def _draw_spot_selected(self, painter: QPainter, spot: RetouchSpot, dest_s: QPointF, src_s: QPointF, r_screen: float) -> None:
+        # Connector line (blue, dashed)
+        pen = QPen(_COLOR_SPOT_DEST, 1.0, Qt.PenStyle.DashLine)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawLine(dest_s, src_s)
+
+        # Dest circle (blue) with crosshair
+        pen.setStyle(Qt.PenStyle.SolidLine)
+        pen.setColor(_COLOR_SPOT_DEST)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawEllipse(dest_s, r_screen, r_screen)
+        half_cross = r_screen / 2.0
+        painter.drawLine(QPointF(dest_s.x() - half_cross, dest_s.y()), QPointF(dest_s.x() + half_cross, dest_s.y()))
+        painter.drawLine(QPointF(dest_s.x(), dest_s.y() - half_cross), QPointF(dest_s.x(), dest_s.y() + half_cross))
+
+        # Resize handle: filled circle at right edge of dest circle
+        resize_pos = QPointF(dest_s.x() + r_screen, dest_s.y())
+        painter.setBrush(_COLOR_SPOT_DEST)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(resize_pos, _RESIZE_HANDLE_PX, _RESIZE_HANDLE_PX)
+
+        # Source circle (orange) with crosshair
+        pen.setColor(_COLOR_SPOT_SOURCE)
+        pen.setStyle(Qt.PenStyle.SolidLine)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawEllipse(src_s, r_screen, r_screen)
+        painter.drawLine(QPointF(src_s.x() - half_cross, src_s.y()), QPointF(src_s.x() + half_cross, src_s.y()))
+        painter.drawLine(QPointF(src_s.x(), src_s.y() - half_cross), QPointF(src_s.x(), src_s.y() + half_cross))
 
     def _draw_brush(self, painter: QPainter) -> None:
         conf = self.state.config.retouch
@@ -206,21 +414,9 @@ class CanvasOverlay(QWidget):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawEllipse(self._mouse_pos, radius, radius)
 
-    def _map_to_image_coords(self, screen_pos: QPointF) -> Optional[Tuple[float, float]]:
-        if self._view_rect.isEmpty() or not self._view_rect.contains(screen_pos):
-            return None
-
-        nb_x = (screen_pos.x() - self._view_rect.x()) / self._view_rect.width()
-        nb_y = (screen_pos.y() - self._view_rect.y()) / self._view_rect.height()
-
-        return float(np.clip(nb_x, 0, 1)), float(np.clip(nb_y, 0, 1))
-
-    def _raw_from_screen_with_grid(self, screen_pos: QPointF, uv_grid: np.ndarray) -> Optional[Tuple[float, float]]:
-        if self._view_rect.isEmpty():
-            return None
-        nb_x = float(np.clip((screen_pos.x() - self._view_rect.x()) / self._view_rect.width(), 0.0, 1.0))
-        nb_y = float(np.clip((screen_pos.y() - self._view_rect.y()) / self._view_rect.height(), 0.0, 1.0))
-        return CoordinateMapping.map_click_to_raw(nb_x, nb_y, uv_grid)
+    # ------------------------------------------------------------------
+    # Mouse events
+    # ------------------------------------------------------------------
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.MiddleButton or (
@@ -231,6 +427,28 @@ class CanvasOverlay(QWidget):
             self.parent().setCursor(Qt.CursorShape.ClosedHandCursor)
             event.accept()
             return
+
+        if self._tool_mode == ToolMode.DUST_PICK and event.button() == Qt.MouseButton.LeftButton:
+            # Hit-test spots first
+            hit = self._hit_test_spots(event.position())
+            if hit is not None:
+                idx, target = hit
+                coords = self._map_to_image_coords(event.position())
+                if coords:
+                    self._selected_spot = idx
+                    self._drag_target = target
+                    self._drag_start_pos = coords
+                    self.update()
+                    event.accept()
+                    return
+            else:
+                # No hit: deselect if something was selected, else fall through to place new spot
+                if self._selected_spot is not None:
+                    self._selected_spot = None
+                    self.update()
+                    event.accept()
+                    return
+                # Fall through to emit clicked (places new spot via controller)
 
         coords = self._map_to_image_coords(event.position())
         if coords:
@@ -310,8 +528,39 @@ class CanvasOverlay(QWidget):
                 except Exception:
                     self._crop_p2 = QPointF(mx, my)
             self.update()
-        else:
-            self.update()
+            return
+
+        # DUST_PICK mode: handle active drag or hover detection
+        if self._tool_mode == ToolMode.DUST_PICK:
+            if self._drag_start_pos is not None and self._selected_spot is not None and self._drag_target is not None:
+                # Active drag
+                if self._drag_target == "resize":
+                    spot = self._spots[self._selected_spot]
+                    dest_s = self._spot_dest_screen(spot)
+                    new_radius = self._screen_distance_to_image_pixels(event.position(), dest_s)
+                    self.spot_drag.emit(self._selected_spot, "resize", new_radius, 0.0)
+                else:
+                    new_coords = self._map_to_image_coords(event.position())
+                    if new_coords:
+                        self.spot_drag.emit(self._selected_spot, self._drag_target, new_coords[0], new_coords[1])
+            else:
+                # Hover detection (no active drag)
+                hit = self._hit_test_spots(event.position())
+                new_hover = hit[0] if hit is not None else None
+                if new_hover != self._hover_spot:
+                    self._hover_spot = new_hover
+
+                # Update cursor
+                if hit is not None:
+                    _, hit_target = hit
+                    if hit_target == "resize":
+                        self.setCursor(QCursor(Qt.CursorShape.SizeFDiagCursor))
+                    else:
+                        self.setCursor(QCursor(Qt.CursorShape.SizeAllCursor))
+                else:
+                    self.setCursor(QCursor(Qt.CursorShape.CrossCursor))
+
+        self.update()
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if self.parent()._is_panning:
@@ -341,6 +590,24 @@ class CanvasOverlay(QWidget):
             self._crop_active = False
             self._crop_p1, self._crop_p2 = None, None
             self.update()
+            return
+
+        # DUST_PICK: end drag
+        if self._drag_start_pos is not None:
+            self._drag_start_pos = None
+            self._drag_target = None
+            self.spot_release.emit()
+            self.update()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if self._tool_mode == ToolMode.DUST_PICK and self._selected_spot is not None:
+            if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+                self.spot_delete.emit(self._selected_spot)
+                self._selected_spot = None
+                self.update()
+                event.accept()
+                return
+        super().keyPressEvent(event)
 
     def leaveEvent(self, event) -> None:
         self.cursor_left.emit()

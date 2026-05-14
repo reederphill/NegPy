@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QStyledItemDelegate,
     QStyleOptionViewItem,
 )
-from PyQt6.QtCore import pyqtSignal, QSize, QTimer, QItemSelectionModel, Qt, QModelIndex
+from PyQt6.QtCore import pyqtSignal, QSize, QTimer, QItemSelectionModel, QModelIndex
 from PyQt6.QtGui import QPainter, QPen, QColor
 
 import qtawesome as qta

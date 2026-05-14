@@ -1,6 +1,6 @@
 from negpy.domain.interfaces import PipelineContext
 from negpy.domain.types import ImageBuffer
-from negpy.features.retouch.models import RetouchConfig
+from negpy.features.retouch.models import RetouchConfig, RetouchSpot
 from negpy.features.retouch.logic import apply_dust_removal
 from negpy.features.geometry.logic import map_coords_to_geometry
 
@@ -32,20 +32,31 @@ class RetouchProcessor:
         fine_rotation = rot_params.get("fine_rotation", 0.0)
         flip_h = rot_params.get("flip_horizontal", False)
         flip_v = rot_params.get("flip_vertical", False)
+        active_roi = context.metrics.get("active_roi", None)
 
-        mapped_spots = []
-        if self.config.manual_dust_spots:
-            for nx, ny, size in self.config.manual_dust_spots:
-                mnx, mny = map_coords_to_geometry(
-                    nx,
-                    ny,
-                    (orig_h, orig_w),
-                    rotation,
-                    fine_rotation,
-                    flip_h,
-                    flip_v,
-                )
-                mapped_spots.append((mnx, mny, size))
+        mapped_spots: list[RetouchSpot] = []
+        for spot in self.config.manual_spots:
+            mdx, mdy = map_coords_to_geometry(
+                spot.dest_x,
+                spot.dest_y,
+                (orig_h, orig_w),
+                rotation,
+                fine_rotation,
+                flip_h,
+                flip_v,
+                roi=active_roi,
+            )
+            msx, msy = map_coords_to_geometry(
+                spot.source_x,
+                spot.source_y,
+                (orig_h, orig_w),
+                rotation,
+                fine_rotation,
+                flip_h,
+                flip_v,
+                roi=active_roi,
+            )
+            mapped_spots.append(RetouchSpot(dest_x=mdx, dest_y=mdy, source_x=msx, source_y=msy, radius=spot.radius))
 
         img = apply_dust_removal(
             img,

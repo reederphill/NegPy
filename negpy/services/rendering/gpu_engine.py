@@ -747,7 +747,7 @@ class GPUEngine:
             "ffIIiiIIf",
             float(ret.dust_threshold),
             float(ret.dust_size),
-            len(ret.manual_dust_spots),
+            len(ret.manual_spots),
             (1 if ret.dust_remove else 0),
             offset[0],
             offset[1],
@@ -846,7 +846,8 @@ class GPUEngine:
     ) -> None:
         """Uploads manual retouch spots to GPU storage buffer."""
         spot_data = bytearray()
-        for x, y, size in conf.manual_dust_spots[:512]:
+        for spot in conf.manual_spots[:512]:
+            x, y, size = spot.dest_x, spot.dest_y, spot.radius
             mx, my = map_coords_to_geometry(
                 x,
                 y,

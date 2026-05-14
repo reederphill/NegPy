@@ -327,7 +327,7 @@ class ControlsPanel(QWidget):
         )
 
         ret = cfg.retouch
-        retouch_count = int(ret.dust_remove) + len(ret.manual_dust_spots)
+        retouch_count = int(ret.dust_remove) + len(ret.manual_spots)
 
         from negpy.features.finish.models import FinishConfig
 

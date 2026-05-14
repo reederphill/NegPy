@@ -40,10 +40,15 @@ class TestDesktopSessionSync(unittest.TestCase):
         self.assertEqual(self.session.state.selected_indices, [1])
 
     def test_sync_selected_settings_exclusions(self):
+        from negpy.features.retouch.models import RetouchSpot
+
         source_config = WorkspaceConfig(
             exposure=replace(WorkspaceConfig().exposure, density=1.5),
             geometry=GeometryConfig(rotation=1, fine_rotation=5.5, manual_crop_rect=(0, 0, 1, 1)),
-            retouch=RetouchConfig(dust_remove=True, manual_dust_spots=[(0.1, 0.1, 5)]),
+            retouch=RetouchConfig(
+                dust_remove=True,
+                manual_spots=[RetouchSpot(dest_x=0.1, dest_y=0.1, source_x=0.15, source_y=0.1, radius=5.0)],
+            ),
             process=ProcessConfig(process_mode="E-6", e6_normalize=True),
         )
         self.session.state.selected_file_idx = 0
@@ -53,7 +58,7 @@ class TestDesktopSessionSync(unittest.TestCase):
         target_config = WorkspaceConfig(
             exposure=replace(WorkspaceConfig().exposure, density=0.0),
             geometry=GeometryConfig(rotation=0, fine_rotation=0.0, manual_crop_rect=None),
-            retouch=RetouchConfig(dust_remove=False, manual_dust_spots=[]),
+            retouch=RetouchConfig(dust_remove=False, manual_spots=[]),
             process=ProcessConfig(process_mode="C41", e6_normalize=False),
         )
         self.mock_repo.load_file_settings.return_value = target_config
@@ -73,7 +78,7 @@ class TestDesktopSessionSync(unittest.TestCase):
         # Excluded fields
         self.assertEqual(saved_config.geometry.fine_rotation, 0.0)
         self.assertIsNone(saved_config.geometry.manual_crop_rect)
-        self.assertEqual(saved_config.retouch.manual_dust_spots, [])
+        self.assertEqual(saved_config.retouch.manual_spots, [])
         self.assertTrue(saved_config.retouch.dust_remove)
 
     def test_undo_redo_persistence(self):

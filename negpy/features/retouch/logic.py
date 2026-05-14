@@ -1,8 +1,10 @@
+import math
 import numpy as np
 import cv2
 from numba import njit  # type: ignore
-from typing import List, Tuple
+from typing import List
 from negpy.domain.types import ImageBuffer, LUMA_R, LUMA_G, LUMA_B
+from negpy.features.retouch.models import RetouchSpot
 from negpy.kernel.image.validation import ensure_image
 from negpy.kernel.image.logic import get_luminance
 
@@ -117,37 +119,108 @@ def _apply_auto_retouch_jit(
 
 
 @njit(cache=True, fastmath=True)
-def _apply_inpainting_grain_jit(
-    img: np.ndarray,
-    img_inpainted: np.ndarray,
-    mask_final: np.ndarray,
-    noise: np.ndarray,
-) -> np.ndarray:
-    h, w, c = img_inpainted.shape
-    res = np.empty_like(img_inpainted)
+def _heal_laplace_nb(diff: np.ndarray, mask: np.ndarray, max_iter: int) -> None:
+    """In-place red/black Gauss-Seidel Laplace solve — darktable heal.c port.
 
+    diff: float32 (H, W, C) — initialised to dest-src; boundary pixels (mask==0) are
+          fixed Dirichlet BCs; interior pixels (mask>0) are updated in-place.
+    mask: float32 (H, W) — 1.0 inside the spot circle, 0.0 outside.
+    """
+    h, w, nc = diff.shape
+
+    nmask = 0
     for y in range(h):
         for x in range(w):
-            lum = (LUMA_R * img_inpainted[y, x, 0] + LUMA_G * img_inpainted[y, x, 1] + LUMA_B * img_inpainted[y, x, 2]) / 255.0
-            mod = 3.0 * lum * (1.0 - lum)
-            m = mask_final[y, x, 0]
+            if mask[y, x] > 0:
+                nmask += 1
 
-            orig_luma = LUMA_R * img[y, x, 0] + LUMA_G * img[y, x, 1] + LUMA_B * img[y, x, 2]
-            heal_luma = (LUMA_R * img_inpainted[y, x, 0] + LUMA_G * img_inpainted[y, x, 1] + LUMA_B * img_inpainted[y, x, 2]) / 255.0
+    if nmask == 0:
+        return
 
-            luma_key = (orig_luma - heal_luma - 0.04) / 0.08
-            if luma_key < 0.0:
-                luma_key = 0.0
-            if luma_key > 1.0:
-                luma_key = 1.0
+    sor_w = (2.0 - 1.0 / (0.1575 * math.sqrt(float(nmask)) + 0.8)) * 0.25
+    eps = 0.1 / 255.0
+    err_exit = eps * eps * sor_w * sor_w
 
-            final_m = m * luma_key
+    for _ in range(max_iter):
+        total_err = 0.0
+        for parity in range(2):
+            for y in range(h):
+                for x in range(w):
+                    if (x + y) % 2 != parity:
+                        continue
+                    if mask[y, x] == 0:
+                        continue
+                    a = 4.0
+                    if y == 0:
+                        a -= 1.0
+                    if y == h - 1:
+                        a -= 1.0
+                    if x == 0:
+                        a -= 1.0
+                    if x == w - 1:
+                        a -= 1.0
+                    for c in range(nc):
+                        ns = 0.0
+                        if y > 0:
+                            ns += diff[y - 1, x, c]
+                        if y < h - 1:
+                            ns += diff[y + 1, x, c]
+                        if x > 0:
+                            ns += diff[y, x - 1, c]
+                        if x < w - 1:
+                            ns += diff[y, x + 1, c]
+                        d = sor_w * (a * diff[y, x, c] - ns)
+                        diff[y, x, c] -= d
+                        total_err += d * d
+        if total_err < err_exit:
+            break
 
-            for ch in range(3):
-                val = img_inpainted[y, x, ch] + noise[y, x, ch] * 0.4 * mod * final_m
-                res[y, x, ch] = img[y, x, ch] * (1.0 - final_m) + (val / 255.0) * final_m
 
-    return res
+def _heal_spot_laplace(img: np.ndarray, spot: RetouchSpot, scale_factor: float, max_iter: int = 2000) -> np.ndarray:
+    """Apply darktable-style Gauss-Seidel Laplace heal for a single spot."""
+    h_img, w_img = img.shape[:2]
+
+    dx = int(round(spot.dest_x * w_img))
+    dy = int(round(spot.dest_y * h_img))
+    sx = int(round(spot.source_x * w_img))
+    sy = int(round(spot.source_y * h_img))
+    r = int(max(1, spot.radius * scale_factor))
+
+    dx = int(np.clip(dx, 0, w_img - 1))
+    dy = int(np.clip(dy, 0, h_img - 1))
+    sx = int(np.clip(sx, 0, w_img - 1))
+    sy = int(np.clip(sy, 0, h_img - 1))
+
+    dy0, dy1 = max(0, dy - r), min(h_img, dy + r + 1)
+    dx0, dx1 = max(0, dx - r), min(w_img, dx + r + 1)
+    ph = dy1 - dy0
+    pw = dx1 - dx0
+
+    if r < 2:
+        result = img.copy()
+        ys = np.clip(sy + np.arange(ph) + dy0 - dy, 0, h_img - 1).astype(int)
+        xs = np.clip(sx + np.arange(pw) + dx0 - dx, 0, w_img - 1).astype(int)
+        result[dy0:dy1, dx0:dx1] = img[np.ix_(ys, xs)]
+        return ensure_image(result)
+
+    dest_patch = img[dy0:dy1, dx0:dx1].astype(np.float32)
+
+    ys = np.clip(sy + np.arange(ph) + dy0 - dy, 0, h_img - 1).astype(int)
+    xs = np.clip(sx + np.arange(pw) + dx0 - dx, 0, w_img - 1).astype(int)
+    src_patch = img[np.ix_(ys, xs)].astype(np.float32)
+
+    py_arr = (np.arange(ph) + dy0 - dy).astype(np.float32)
+    px_arr = (np.arange(pw) + dx0 - dx).astype(np.float32)
+    cy_grid, cx_grid = np.meshgrid(py_arr, px_arr, indexing="ij")
+    mask = ((cy_grid**2 + cx_grid**2) <= float(r * r)).astype(np.float32)
+
+    diff = (dest_patch - src_patch).astype(np.float32)
+    _heal_laplace_nb(diff, mask, max_iter)
+
+    result = img.copy()
+    healed = np.clip(src_patch + diff, 0.0, 1.0)
+    result[dy0:dy1, dx0:dx1] = np.where(mask[:, :, np.newaxis] > 0, healed, dest_patch)
+    return ensure_image(result)
 
 
 def apply_dust_removal(
@@ -155,7 +228,7 @@ def apply_dust_removal(
     dust_remove: bool,
     dust_threshold: float,
     dust_size: int,
-    manual_spots: List[Tuple[float, float, float]],
+    manual_spots: List[RetouchSpot],
     scale_factor: float,
 ) -> ImageBuffer:
     if not (dust_remove or manual_spots):
@@ -182,30 +255,7 @@ def apply_dust_removal(
             float(scale_factor),
         )
 
-    if manual_spots:
-        h_img, w_img = img.shape[:2]
-        manual_mask_u8 = np.zeros((h_img, w_img), dtype=np.uint8)
-        for spot in manual_spots:
-            nx, ny, s_size = spot
-            radius = int(max(1, s_size * scale_factor))
-            cv2.circle(manual_mask_u8, (int(nx * w_img), int(ny * h_img)), radius, 255, -1)
-
-        img_u8 = np.clip(np.nan_to_num(img * 255), 0, 255).astype(np.uint8)
-        inpaint_rad = int(3 * scale_factor) | 1
-        img_inpainted_u8 = ensure_image(cv2.inpaint(img_u8, manual_mask_u8, inpaint_rad, cv2.INPAINT_TELEA))
-
-        noise_arr = np.random.normal(0, 3.5, img_inpainted_u8.shape).astype(np.float32)
-        mask_base = manual_mask_u8.astype(np.float32) / 255.0
-        mask_blur = cv2.GaussianBlur(mask_base[:, :, None], (inpaint_rad | 1, inpaint_rad | 1), 0)
-        mask_final = (mask_blur[:, :, None] if mask_blur.ndim == 2 else mask_blur).astype(np.float32)
-
-        img = ensure_image(
-            _apply_inpainting_grain_jit(
-                np.ascontiguousarray(img.astype(np.float32)),
-                np.ascontiguousarray(img_inpainted_u8.astype(np.float32)),
-                np.ascontiguousarray(mask_final.astype(np.float32)),
-                np.ascontiguousarray(noise_arr.astype(np.float32)),
-            )
-        )
+    for spot in manual_spots:
+        img = _heal_spot_laplace(np.ascontiguousarray(img.astype(np.float32)), spot, float(scale_factor))
 
     return ensure_image(img)

@@ -56,3 +56,14 @@ class CoordinateMapping:
         py = int(np.clip(ny * (h_uv - 1), 0, h_uv - 1))
         raw_uv = uv_grid[py, px]
         return float(raw_uv[0]), float(raw_uv[1])
+
+    @staticmethod
+    def map_raw_to_view(rx: float, ry: float, uv_grid: np.ndarray) -> Tuple[float, float]:
+        """
+        Raw (0-1) -> Viewport (0-1). Inverse of map_click_to_raw via nearest-neighbour search.
+        """
+        diff = np.abs(uv_grid[..., 0] - rx) + np.abs(uv_grid[..., 1] - ry)
+        flat_idx = int(np.argmin(diff))
+        h, w = uv_grid.shape[:2]
+        vy, vx = divmod(flat_idx, w)
+        return float(vx) / max(1, w - 1), float(vy) / max(1, h - 1)

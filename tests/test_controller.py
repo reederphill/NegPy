@@ -219,6 +219,14 @@ class TestBatchExportFiltering(unittest.TestCase):
         self.controller._run_export_tasks.assert_called_once()
         return self.controller._run_export_tasks.call_args.args[0]
 
+    def _make_image(self):
+        """20x20 image: neutral center (rows/cols 2-17), red-tinted 2px border."""
+        import numpy as np
+
+        img = np.ones((20, 20, 3), dtype=np.float32) * [0.8, 0.5, 0.5]
+        img[2:18, 2:18] = [0.5, 0.5, 0.5]
+        return img
+
     def test_export_all_with_no_filter(self):
         self.visible_indices = [0, 1, 2]
         self.controller.request_batch_export()

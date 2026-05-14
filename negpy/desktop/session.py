@@ -452,7 +452,7 @@ class DesktopSessionManager(QObject):
                     fine_rotation=target_config.geometry.fine_rotation,
                 )
 
-                merged_retouch = replace(source_config.retouch, manual_dust_spots=target_config.retouch.manual_dust_spots)
+                merged_retouch = replace(source_config.retouch, manual_spots=target_config.retouch.manual_spots)
 
                 merged_process = replace(
                     source_config.process,
