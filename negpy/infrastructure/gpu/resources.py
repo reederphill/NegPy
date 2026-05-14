@@ -101,7 +101,7 @@ class GPUTexture:
         try:
             staging.map_sync(mode=wgpu.MapMode.READ)
             view = staging.read_mapped()
-            arr = np.frombuffer(view, dtype=np.float32).reshape((rh, bytes_per_row // 4))
+            arr = np.frombuffer(view, dtype=np.float32)[: required_size // 4].reshape((rh, bytes_per_row // 4))
             result = arr[:, : rw * 4].reshape((rh, rw, 4)).copy()
             staging.unmap()
             return result
