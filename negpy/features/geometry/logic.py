@@ -474,6 +474,7 @@ def get_autocrop_coords(
     """
     Detects film border via density thresholding.
     """
+
     h, w = img.shape[:2]
     roi = _find_autocrop_roi_from_contours(img)
     if roi is None:

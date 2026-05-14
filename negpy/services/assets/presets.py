@@ -23,7 +23,7 @@ class Presets:
             "fine_rotation",
             "autocrop",
             "autocrop_offset",
-            "manual_dust_spots",
+            "manual_spots",
             "local_adjustments",
             "active_adjustment_idx",
             "crosstalk_matrix",
