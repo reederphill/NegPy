@@ -10,12 +10,18 @@ from negpy.desktop.view.canvas.pixel_readout import PixelReadoutOverlay
 from negpy.desktop.view.shortcut_registry import tooltip_with_shortcut
 from negpy.infrastructure.gpu.device import GPUDevice
 from negpy.infrastructure.gpu.resources import GPUTexture
+from negpy.kernel.system.config import APP_CONFIG
 from negpy.kernel.system.logging import get_logger
 
 if TYPE_CHECKING:
     from negpy.desktop.controller import AppController
 
 logger = get_logger(__name__)
+
+
+def clamp_canvas_zoom_level(zoom: float) -> float:
+    zmin, zmax = APP_CONFIG.canvas_zoom_min, APP_CONFIG.canvas_zoom_max
+    return max(zmin, min(zoom, zmax))
 
 
 class ImageCanvas(QWidget):
@@ -89,7 +95,7 @@ class ImageCanvas(QWidget):
 
     def set_zoom(self, zoom: float) -> None:
         """Sets zoom level directly (from toolbar)."""
-        self.zoom_level = max(0.25, min(zoom, 4.0))
+        self.zoom_level = clamp_canvas_zoom_level(zoom)
         if self.zoom_level <= 1.0:
             self.pan_offset = QPointF(0, 0)
         self._sync_transform()
@@ -112,8 +118,7 @@ class ImageCanvas(QWidget):
             return
         vw, vh = max(1, self.width()), max(1, self.height())
         zoom = min(vw / max(1, img_w), vh / max(1, img_h))
-        zoom = max(0.25, min(zoom, 4.0))
-        self.zoom_level = zoom
+        self.zoom_level = clamp_canvas_zoom_level(zoom)
         self.pan_offset = QPointF(0, 0)
         self._sync_transform()
 
@@ -173,7 +178,7 @@ class ImageCanvas(QWidget):
         zoom_factor = 1.1 if delta > 0 else 0.9
 
         old_zoom = self.zoom_level
-        new_zoom = max(0.25, min(old_zoom * zoom_factor, 4.0))
+        new_zoom = clamp_canvas_zoom_level(old_zoom * zoom_factor)
 
         if new_zoom > 1.0 and old_zoom > 0:
             # Cursor offset from widget center, in normalized units [-0.5, 0.5]

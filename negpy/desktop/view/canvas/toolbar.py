@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
 from negpy.desktop.controller import AppController
 from negpy.desktop.view.styles.templates import swatch_qss
 from negpy.desktop.view.styles.theme import THEME
+from negpy.kernel.system.config import APP_CONFIG
 
 CANVAS_COLORS = [
     ("#050505", (0.02, 0.02, 0.02), "Black"),
@@ -95,9 +96,12 @@ class ActionToolbar(QWidget):
         self.btn_flip_v.setIcon(qta.icon("fa5s.arrows-alt-v", color=icon_color))
         self.btn_flip_v.setToolTip("Flip Vertical  V")
 
-        # 3. Zoom
+        # 3. Zoom (range matches APP_CONFIG canvas_zoom_min/max, percent)
         self.zoom_slider = QSlider(Qt.Orientation.Horizontal)
-        self.zoom_slider.setRange(25, 400)
+        self.zoom_slider.setRange(
+            int(APP_CONFIG.canvas_zoom_min * 100),
+            int(APP_CONFIG.canvas_zoom_max * 100),
+        )
         self.zoom_slider.setValue(100)
         self.zoom_slider.setFixedWidth(80)
         self.zoom_label = QLabel("100%")
