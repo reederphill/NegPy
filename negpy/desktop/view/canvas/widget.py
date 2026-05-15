@@ -1,7 +1,7 @@
-from typing import TYPE_CHECKING, Optional, Tuple, Any
+from typing import TYPE_CHECKING, Any, Optional, Tuple
 import sys
-from PyQt6.QtWidgets import QWidget, QStackedLayout, QMenu
-from PyQt6.QtGui import QPainter, QColor, QMouseEvent
+from PyQt6.QtWidgets import QStackedLayout, QMenu, QWidget
+from PyQt6.QtGui import QMouseEvent, QPainter, QColor, QWheelEvent
 from PyQt6.QtCore import pyqtSignal, Qt, QPointF
 from negpy.desktop.session import ToolMode, AppState
 from negpy.desktop.view.canvas.gpu_widget import GPUCanvasWidget
@@ -22,6 +22,42 @@ logger = get_logger(__name__)
 def clamp_canvas_zoom_level(zoom: float) -> float:
     zmin, zmax = APP_CONFIG.canvas_zoom_min, APP_CONFIG.canvas_zoom_max
     return max(zmin, min(zoom, zmax))
+
+
+# One "notch" (typical mouse wheel) ≈ 120/8°; matches prior fixed 1.1 / 0.9 per notch.
+WHEEL_ZOOM_NOTCH = 1.1
+# Trackpad: map pixel delta to notch-equivalents (tuned for ~smooth steps).
+_WHEEL_PIXELS_PER_NOTCH = 64.0
+# Do not apply more than this many notch-equivalents in a single event (huge flings).
+_WHEEL_MAX_NOTCHES = 4.0
+
+
+def wheel_notch_delta(event: QWheelEvent) -> float:
+    """
+    Signed "notch" count: >0 = zoom in, 0 = no vertical scroll intent.
+    angleDelta preferred; pixelDelta when y-angle is 0. OS ``inverted`` honored.
+    Result is negated at the end so a natural trackpad (scroll down) zooms in, matching photo viewers.
+    """
+    d = int(event.angleDelta().y())
+    if d != 0:
+        u = float(d) / 120.0
+    else:
+        pdy = int(event.pixelDelta().y())
+        if pdy == 0:
+            return 0.0
+        u = float(pdy) / _WHEEL_PIXELS_PER_NOTCH
+    if event.inverted():
+        u = -u
+    if u == 0.0:
+        return 0.0
+    c = _WHEEL_MAX_NOTCHES
+    u = max(-c, min(c, u))
+    return -u
+
+
+def apply_wheel_zoom_notches(zoom: float, notch_u: float) -> float:
+    """Clamped zoom after one wheel event (notch_u from ``wheel_notch_delta``)."""
+    return clamp_canvas_zoom_level(zoom * (WHEEL_ZOOM_NOTCH**notch_u))
 
 
 class ImageCanvas(QWidget):
@@ -172,31 +208,44 @@ class ImageCanvas(QWidget):
             return (float(px[0]) * scale, float(px[1]) * scale, float(px[2]) * scale)
         return None
 
-    def wheelEvent(self, event) -> None:
-        """Handles zooming anchored on the mouse cursor position."""
-        delta = event.angleDelta().y()
-        zoom_factor = 1.1 if delta > 0 else 0.9
-
+    def _commit_anchored_zoom(self, new_zoom: float, anchor: QPointF) -> None:
+        """Applies a zoom level with pan adjusted so `anchor` stays under the same image point."""
         old_zoom = self.zoom_level
-        new_zoom = clamp_canvas_zoom_level(old_zoom * zoom_factor)
-
+        if new_zoom == old_zoom:
+            return
         if new_zoom > 1.0 and old_zoom > 0:
-            # Cursor offset from widget center, in normalized units [-0.5, 0.5]
-            cursor = event.position()
-            dx = cursor.x() / max(1, self.width()) - 0.5
-            dy = cursor.y() / max(1, self.height()) - 0.5
-            # Adjust pan so the image point under cursor stays fixed
+            dx = anchor.x() / max(1, self.width()) - 0.5
+            dy = anchor.y() / max(1, self.height()) - 0.5
             k = new_zoom / old_zoom
             self.pan_offset = QPointF(
-                self.pan_offset.x() * k - dx * (k - 1),
-                self.pan_offset.y() * k - dy * (k - 1),
+                self.pan_offset.x() * k - dx * (k - 1.0),
+                self.pan_offset.y() * k - dy * (k - 1.0),
             )
-
         self.zoom_level = new_zoom
         if self.zoom_level <= 1.0:
             self.pan_offset = QPointF(0, 0)
-
         self._sync_transform()
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        """Handles zooming anchored on the mouse cursor position."""
+        u = wheel_notch_delta(event)
+        if u == 0.0:
+            event.ignore()
+            return
+
+        zmin = APP_CONFIG.canvas_zoom_min
+        zmax = APP_CONFIG.canvas_zoom_max
+        old_zoom = self.zoom_level
+        if (old_zoom >= zmax and u > 0.0) or (old_zoom <= zmin and u < 0.0):
+            event.accept()
+            return
+
+        new_zoom = apply_wheel_zoom_notches(old_zoom, u)
+        if new_zoom == old_zoom:
+            event.accept()
+            return
+
+        self._commit_anchored_zoom(new_zoom, event.position())
         event.accept()
 
     def mousePressEvent(self, event) -> None:

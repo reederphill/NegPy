@@ -276,9 +276,10 @@ class ActionToolbar(QWidget):
 
     def _on_zoom_changed(self, zoom: float) -> None:
         self.zoom_slider.blockSignals(True)
-        self.zoom_slider.setValue(int(zoom * 100))
+        zoom_pct = int(round(max(0.0, zoom) * 100.0))
+        self.zoom_slider.setValue(zoom_pct)
         self.zoom_slider.blockSignals(False)
-        self.zoom_label.setText(f"{int(zoom * 100)}%")
+        self.zoom_label.setText(f"{zoom_pct}%")
 
     def rotate(self, direction: int) -> None:
         from dataclasses import replace
