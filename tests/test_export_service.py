@@ -1,6 +1,16 @@
+import inspect
+
 import numpy as np
+from negpy.domain.models import ExportConfig, WorkspaceConfig
+from negpy.desktop.workers import export as export_worker_mod
 from negpy.services.rendering.image_processor import ImageProcessor
-from negpy.domain.models import WorkspaceConfig, ExportConfig
+
+
+def test_export_worker_uses_process_export_not_preview_load() -> None:
+    """Export must keep using full-res `process_export(file_path, ...)` — not `PreviewManager` decode."""
+    src = inspect.getsource(export_worker_mod.ExportWorker.run_batch)
+    assert "process_export" in src
+    assert "load_linear_preview" not in src
 
 
 def test_apply_scaling_f32() -> None:
