@@ -1,5 +1,6 @@
 import io
-from typing import Any, Optional
+from types import SimpleNamespace
+from typing import Any, Optional, Tuple
 
 import numpy as np
 import rawpy
@@ -96,8 +97,18 @@ class NonStandardFileWrapper:
     numpy -> rawpy-like interface.
     """
 
-    def __init__(self, data: np.ndarray):
+    def __init__(self, data: np.ndarray, full_output_hw: Optional[Tuple[int, int]] = None) -> None:
         self.data = data
+        # If set, `sizes` reports this (h, w) for full image; else derived from `data` shape.
+        self._full_output_hw: Optional[Tuple[int, int]] = full_output_hw
+
+    @property
+    def sizes(self) -> Any:
+        if self._full_output_hw is not None:
+            h, w = self._full_output_hw
+        else:
+            h, w = self.data.shape[0], self.data.shape[1]
+        return SimpleNamespace(raw_height=int(h), raw_width=int(w))
 
     def __enter__(self) -> "NonStandardFileWrapper":
         return self
