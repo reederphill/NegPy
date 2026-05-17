@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _CACHE_DIR = Path.home() / ".cache" / "negpy-metrics"
+_RAF_FILENAME = "RAW_FUJI_X-T10.RAF"
+_RAF_URL = "http://www.rawsamples.ch/raws/fuji/RAW_FUJI_X-T10.RAF"
 
 
 @dataclass(frozen=True)
@@ -64,6 +66,22 @@ def get_fixture_path(fix: RawFixture) -> str | None:
         return str(cached)
 
     if _download(fix.url, cached):
+        return str(cached)
+
+    return None
+
+
+def get_perf_raw_path() -> str | None:
+    """Return a local path for the RAF perf fixture, downloading if needed."""
+    env = os.environ.get("NEGPY_PERF_RAW", "").strip()
+    if env and os.path.isfile(env):
+        return env
+
+    cached = _CACHE_DIR / _RAF_FILENAME
+    if cached.is_file():
+        return str(cached)
+
+    if _download(_RAF_URL, cached):
         return str(cached)
 
     return None

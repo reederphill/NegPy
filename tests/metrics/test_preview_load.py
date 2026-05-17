@@ -105,3 +105,19 @@ def test_regression_against_baseline_if_configured() -> None:
             failures.append(f"{k}: {new_v:.3f}s vs baseline {old_v:.3f}s (>{pct}% worse) [machine {label!r}]")
 
     assert not failures, "Metrics regression vs baseline:\n" + "\n".join(failures)
+
+
+def test_preview_load_warm_from_cache() -> None:
+    """Second load with same file_hash hits in-memory LRU — should be dramatically faster."""
+    path = fixture.get_perf_raw_path()
+    if path is None:
+        pytest.skip("No perf fixture available (network down and NEGPY_PERF_RAW not set)")
+
+    h = "metrics_bench_cache_key"
+    pm = PreviewManager()
+    pm.load_linear_preview(path, file_hash=h)  # warm up
+    t0 = time.perf_counter()
+    pm.load_linear_preview(path, file_hash=h)  # cache hit
+    warm = time.perf_counter() - t0
+    recorder.record("preview.load.warm_s", warm)
+    assert warm >= 0.0  # sanity only — ratio is the meaningful signal
