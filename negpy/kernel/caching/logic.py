@@ -1,3 +1,4 @@
+import functools
 import hashlib
 import json
 from dataclasses import dataclass, asdict
@@ -15,6 +16,11 @@ class CacheEntry:
     data: ImageBuffer
     metrics: Dict[str, Any]
     active_roi: Optional[ROI] = None
+
+
+@functools.lru_cache(maxsize=64)
+def _md5_of_serialized(serialized: str) -> str:
+    return hashlib.md5(serialized.encode("utf-8")).hexdigest()
 
 
 def calculate_config_hash(config: Any) -> str:
@@ -39,4 +45,4 @@ def calculate_config_hash(config: Any) -> str:
         data = asdict(config)
 
     serialized = json.dumps(data, sort_keys=True, default=str)
-    return hashlib.md5(serialized.encode("utf-8")).hexdigest()
+    return _md5_of_serialized(serialized)
