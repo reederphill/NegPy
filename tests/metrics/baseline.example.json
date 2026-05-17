@@ -1,0 +1,19 @@
+{
+  "schema_version": 2,
+  "note": "per_machine: merge outputs from my-mac.json and ci-linux.json, or hand-edit. Regression picks the entry for the current machine_label only.",
+  "per_machine": {
+    "github-linux-x64": {
+      "updated_utc": "2026-04-24T00:00:00+00:00",
+      "metrics": {
+        "preview.load.cold_s": 2.0,
+        "preview.load.warm_s": 0.15
+      }
+    },
+    "local-darwin-arm64-my-mac": {
+      "metrics": {
+        "preview.load.cold_s": 0.9,
+        "preview.load.warm_s": 0.02
+      }
+    }
+  }
+}

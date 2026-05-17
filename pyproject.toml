@@ -67,6 +67,13 @@ packages = ["negpy"]
 [tool.setuptools.dynamic]
 version = { file = "VERSION" }
 
+[tool.pytest.ini_options]
+markers = [
+    "slow: wall-clock tests that require I/O or a real RAW file (deselect with '-m not slow')",
+    "metrics: opt-in performance metrics tests",
+]
+addopts = "-m 'not slow'"
+
 [tool.ruff]
 line-length = 140
 exclude = [

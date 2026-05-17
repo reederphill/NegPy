@@ -6,6 +6,16 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"
 os.environ["XDG_RUNTIME_DIR"] = "/tmp/runtime-runner"
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    g = parser.getgroup("metrics", "negpy performance metrics export")
+    g.addoption(
+        "--metrics-out",
+        action="store",
+        default=None,
+        help="Write session metrics to this JSON path (overrides NEGPY_METRICS_OUT if set as non-empty).",
+    )
+
+
 @pytest.fixture(scope="session", autouse=True)
 def qapp():
     from PyQt6.QtWidgets import QApplication
