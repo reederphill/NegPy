@@ -267,7 +267,14 @@ class PreviewLoadWorker(QObject):
         t0 = time.perf_counter()
         try:
             if task.use_splash and not task.full_resolution:
-                sp = self._preview_service.try_splash_preview(task.file_path)
+                # Open the file once; get splash + linear in a single pass.
+                sp, (raw, dims, _) = self._preview_service.load_splash_and_linear(
+                    task.file_path,
+                    task.workspace_color_space,
+                    use_camera_wb=task.use_camera_wb,
+                    full_resolution=task.full_resolution,
+                    file_hash=task.file_hash,
+                )
                 if sp is not None:
                     sbuf, sdims = sp
                     self.splash.emit(task.file_path, sbuf, sdims)
