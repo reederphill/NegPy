@@ -217,7 +217,7 @@ class PreviewManager:
                     time.perf_counter() - t_all,
                     file_path,
                 )
-                return ensure_image(buf.copy()), dims, meta
+                return buf, dims, meta  # cache hit — caller must not mutate this buffer
 
         t_decode = time.perf_counter()
         with ctx_mgr as raw:
@@ -282,7 +282,7 @@ class PreviewManager:
                     file_path,
                 )
                 # No splash on a cache hit — the linear result is already fast.
-                return None, (ensure_image(buf.copy()), dims, meta)
+                return None, (buf, dims, meta)  # cache hit — caller must not mutate this buffer
 
         t_decode = time.perf_counter()
         splash_result: Optional[Tuple[ImageBuffer, Dimensions]] = None
