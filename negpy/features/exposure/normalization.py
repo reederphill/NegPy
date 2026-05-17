@@ -85,14 +85,20 @@ def analyze_log_exposure_bounds(
     process_mode: str = ProcessMode.C41,
     e6_normalize: bool = True,
     percentile_clip: float = 0.0,
+    img_log: Optional[ImageBuffer] = None,  # pre-computed; skips recomputation
 ) -> LogNegativeBounds:
     """
     Performs full analysis pass on a linear image to find density floors/ceils.
     percentile_clip controls how far from the histogram extremes the bounds are sampled
     (e.g. 0.0001 = nearly no clipping; 1.0 = clip 1% from each tail).
+    If img_log is provided (pre-computed log10 of the full image), the internal
+    np.log10 computation is skipped.
     """
     epsilon = 1e-6
-    img_log = np.log10(np.clip(np.nan_to_num(image, nan=epsilon, posinf=1.0, neginf=epsilon), epsilon, 1.0))
+    if img_log is None:
+        img_log = np.log10(np.clip(np.nan_to_num(image, nan=epsilon, posinf=1.0, neginf=epsilon), epsilon, 1.0))
+    else:
+        assert img_log.shape == image.shape, f"img_log shape {img_log.shape} must match image shape {image.shape} — pass the full-image log"
 
     if roi:
         y1, y2, x1, x2 = roi

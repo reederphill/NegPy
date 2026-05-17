@@ -55,6 +55,7 @@ class NormalizationProcessor:
                     process_mode=context.process_mode,
                     e6_normalize=self.config.e6_normalize,
                     percentile_clip=self.config.drange_clip,
+                    img_log=img_log,  # pre-computed above — skip recomputation
                 )
                 context.metrics["log_bounds"] = bounds
                 context.metrics["log_bounds_buffer_val"] = self.config.analysis_buffer
