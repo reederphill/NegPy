@@ -69,6 +69,18 @@ We use `pytest`. New features should include unit tests in the `tests/` director
 make test
 ```
 
+`make test` skips tests marked `slow` by default (see `addopts` in `pyproject.toml`). This includes the performance metrics suite in `tests/metrics/`.
+
+To run the metrics tests locally, point `NEGPY_PERF_RAW` at a Fujifilm X70 RAF file and run:
+
+```bash
+NEGPY_PERF_RAW=/path/to/DSCF1276.RAF \
+NEGPY_METRICS_OUT=metrics-artifacts/preview_metrics.json \
+uv run pytest tests/metrics/ -m "slow" -q
+```
+
+If `NEGPY_PERF_RAW` is not set the suite will attempt to download the fixture to `~/.cache/negpy-metrics/` automatically, or skip if the download fails.
+
 ### 3. Workflow (The Makefile)
 The `Makefile` is the central source of truth for developer commands and executes everything via `uv run`:
 - `make install`: Set up environment and sync dependencies.
