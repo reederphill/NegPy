@@ -50,42 +50,136 @@ class PreviewManager:
     def __init__(self) -> None:
         self._cache = PreviewBufferCache(APP_CONFIG)
 
+    # ------------------------------------------------------------------
+    # Internal helpers — operate on an already-open raw object so that
+    # callers that need both splash and linear can share a single file open.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _try_splash_from_open_raw(raw: Any, file_path: str) -> Optional[Tuple[ImageBuffer, Dimensions]]:
+        """
+        Extract a splash preview from an already-open raw object.
+        Returns None if a thumb cannot be extracted or converted.
+        """
+        t0 = time.perf_counter()
+        if not hasattr(raw, "extract_thumb"):
+            return None
+        try:
+            thumb = raw.extract_thumb()
+        except Exception:
+            return None
+        img: Optional[Image.Image] = None
+        if thumb.format == rawpy.ThumbFormat.JPEG:
+            img = Image.open(io.BytesIO(thumb.data))
+        elif thumb.format == rawpy.ThumbFormat.BITMAP:
+            img = Image.fromarray(thumb.data)
+        if img is None:
+            return None
+        img = img.convert("RGB")
+        arr = np.ascontiguousarray(np.array(img, dtype=np.float32) / 255.0)
+        h, w = arr.shape[:2]
+        if max(h, w) > APP_CONFIG.preview_render_size:
+            scale = APP_CONFIG.preview_render_size / max(h, w)
+            tw, th = int(w * scale), int(h * scale)
+            arr = ensure_image(cv2.resize(arr, (tw, th), interpolation=cv2.INTER_AREA).astype(np.float32))
+        dh, dw = arr.shape[:2]
+        full_dims = _output_dimensions_from_raw(raw, dh, dw)
+        logger.debug("preview _try_splash_from_open_raw ok %.3fs for %s", time.perf_counter() - t0, file_path)
+        return ensure_image(arr), full_dims
+
+    def _load_from_open_raw(
+        self,
+        raw: Any,
+        metadata: dict,
+        file_path: str,
+        color_space: str,
+        use_camera_wb: bool,
+        full_resolution: bool,
+        file_hash: str | None,
+    ) -> Tuple[ImageBuffer, Dimensions, dict]:
+        """
+        Decode and resize a linear preview from an already-open raw object.
+        Handles cache write on completion.
+        """
+        t_decode = time.perf_counter()
+        raw_color_space = ColorSpaceRegistry.get_rawpy_space(color_space)
+
+        use_fast = (not full_resolution) and (not isinstance(raw, NonStandardFileWrapper))
+        if use_fast:
+            demosaic = rawpy.DemosaicAlgorithm.LINEAR
+            post_kw: dict = {"half_size": True}
+        else:
+            demosaic = get_best_demosaic_algorithm(raw)
+            post_kw = {}
+
+        user_wb = None if use_camera_wb else [1, 1, 1, 1]
+
+        t_pp = time.perf_counter()
+        rgb = raw.postprocess(
+            gamma=(1, 1),
+            no_auto_bright=True,
+            use_camera_wb=use_camera_wb,
+            user_wb=user_wb,
+            output_bps=16,
+            output_color=raw_color_space,
+            demosaic_algorithm=demosaic,
+            user_flip=0,
+            **post_kw,
+        )
+        logger.debug("raw.postprocess %.3fs (fast=%s)", time.perf_counter() - t_pp, use_fast)
+        rgb = ensure_rgb(rgb)
+
+        full_linear = uint16_to_float32(np.ascontiguousarray(rgb))
+        h_p, w_p = full_linear.shape[:2]
+        h_orig, w_orig = _output_dimensions_from_raw(raw, h_p, w_p)
+        t_resize0 = time.perf_counter()
+        max_res = APP_CONFIG.preview_render_size
+        if max(h_p, w_p) > max_res and not full_resolution:
+            scale = max_res / max(h_p, w_p)
+            target_w = int(w_p * scale)
+            target_h = int(h_p * scale)
+            preview_raw = ensure_image(
+                cv2.resize(
+                    full_linear,
+                    (target_w, target_h),
+                    interpolation=cv2.INTER_AREA,
+                )
+            )
+        else:
+            preview_raw = full_linear.copy()
+        logger.debug("preview resize+convert %.3fs", time.perf_counter() - t_resize0)
+
+        out = ensure_image(preview_raw)
+        logger.debug(
+            "PreviewManager._load_from_open_raw decode+resize %.3fs",
+            time.perf_counter() - t_decode,
+        )
+        if file_hash:
+            ck = PreviewCacheKey(
+                file_hash=file_hash,
+                use_camera_wb=use_camera_wb,
+                workspace_color_space=color_space,
+                full_resolution=full_resolution,
+            )
+            self._cache.put(ck, out.copy(), (h_orig, w_orig), dict(metadata))
+        return out, (h_orig, w_orig), metadata
+
+    # ------------------------------------------------------------------
+    # Public API — thin wrappers; kept for all existing callers.
+    # ------------------------------------------------------------------
+
     @staticmethod
     def try_splash_preview(file_path: str) -> Optional[Tuple[ImageBuffer, Dimensions]]:
         """
         Quick embedded-JPEG (or half-size) RGB for first paint. Returns None if not available.
         """
-        t0 = time.perf_counter()
         try:
             ctx_mgr, _metadata = loader_factory.get_loader(file_path)
         except Exception:
             return None
         try:
             with ctx_mgr as raw:
-                if not hasattr(raw, "extract_thumb"):
-                    return None
-                try:
-                    thumb = raw.extract_thumb()
-                except Exception:
-                    return None
-                img: Optional[Image.Image] = None
-                if thumb.format == rawpy.ThumbFormat.JPEG:
-                    img = Image.open(io.BytesIO(thumb.data))
-                elif thumb.format == rawpy.ThumbFormat.BITMAP:
-                    img = Image.fromarray(thumb.data)
-                if img is None:
-                    return None
-                img = img.convert("RGB")
-                arr = np.ascontiguousarray(np.array(img, dtype=np.float32) / 255.0)
-                h, w = arr.shape[:2]
-                if max(h, w) > APP_CONFIG.preview_render_size:
-                    scale = APP_CONFIG.preview_render_size / max(h, w)
-                    tw, th = int(w * scale), int(h * scale)
-                    arr = ensure_image(cv2.resize(arr, (tw, th), interpolation=cv2.INTER_AREA).astype(np.float32))
-                dh, dw = arr.shape[:2]
-                full_dims = _output_dimensions_from_raw(raw, dh, dw)
-                logger.debug("preview try_splash_preview ok %.3fs for %s", time.perf_counter() - t0, file_path)
-                return ensure_image(arr), full_dims
+                return PreviewManager._try_splash_from_open_raw(raw, file_path)
         except Exception as e:
             logger.debug("preview splash skip: %s", e)
         return None
@@ -125,59 +219,53 @@ class PreviewManager:
                 )
                 return ensure_image(buf.copy()), dims, meta
 
-        raw_color_space = ColorSpaceRegistry.get_rawpy_space(color_space)
         t_decode = time.perf_counter()
         with ctx_mgr as raw:
-            use_fast = (not full_resolution) and (not isinstance(raw, NonStandardFileWrapper))
-            if use_fast:
-                demosaic = rawpy.DemosaicAlgorithm.LINEAR
-                post_kw: dict = {"half_size": True}
-            else:
-                demosaic = get_best_demosaic_algorithm(raw)
-                post_kw = {}
-
-            user_wb = None if use_camera_wb else [1, 1, 1, 1]
-
-            t_pp = time.perf_counter()
-            rgb = raw.postprocess(
-                gamma=(1, 1),
-                no_auto_bright=True,
-                use_camera_wb=use_camera_wb,
-                user_wb=user_wb,
-                output_bps=16,
-                output_color=raw_color_space,
-                demosaic_algorithm=demosaic,
-                user_flip=0,
-                **post_kw,
+            out, dims, meta = self._load_from_open_raw(
+                raw,
+                metadata,
+                file_path,
+                color_space,
+                use_camera_wb,
+                full_resolution,
+                file_hash,
             )
-            logger.debug("raw.postprocess %.3fs (fast=%s)", time.perf_counter() - t_pp, use_fast)
-            rgb = ensure_rgb(rgb)
-
-            full_linear = uint16_to_float32(np.ascontiguousarray(rgb))
-            h_p, w_p = full_linear.shape[:2]
-            h_orig, w_orig = _output_dimensions_from_raw(raw, h_p, w_p)
-            t_resize0 = time.perf_counter()
-            max_res = APP_CONFIG.preview_render_size
-            if max(h_p, w_p) > max_res and not full_resolution:
-                scale = max_res / max(h_p, w_p)
-                target_w = int(w_p * scale)
-                target_h = int(h_p * scale)
-                preview_raw = ensure_image(
-                    cv2.resize(
-                        full_linear,
-                        (target_w, target_h),
-                        interpolation=cv2.INTER_AREA,
-                    )
-                )
-            else:
-                preview_raw = full_linear.copy()
-            logger.debug("preview resize+convert %.3fs", time.perf_counter() - t_resize0)
-        out = ensure_image(preview_raw)
         logger.debug(
             "PreviewManager.load_linear_preview decode+resize %.3fs (total %.3fs)",
             time.perf_counter() - t_decode,
             time.perf_counter() - t_all,
         )
+        return out, dims, meta
+
+    def load_splash_and_linear(
+        self,
+        file_path: str,
+        color_space: str | None = None,
+        use_camera_wb: bool = False,
+        full_resolution: bool = False,
+        file_hash: str | None = None,
+    ) -> Tuple[Optional[Tuple[ImageBuffer, Dimensions]], Tuple[ImageBuffer, Dimensions, dict]]:
+        """
+        Open the RAW file once and return both the splash preview and the linear
+        preview in a single call.  This avoids the double file-open cost that
+        occurs when ``try_splash_preview`` and ``load_linear_preview`` are called
+        back-to-back.
+
+        Returns ``(splash_result, linear_result)`` where *splash_result* is the
+        same type as ``try_splash_preview`` (may be ``None``) and *linear_result*
+        is the same type as ``load_linear_preview``.
+        """
+        t_all = time.perf_counter()
+        try:
+            ctx_mgr, metadata = loader_factory.get_loader(file_path)
+        except Exception as e:
+            logger.debug("preview load_splash_and_linear open failed: %s", e)
+            raise
+
+        if color_space is None:
+            color_space = metadata.get("color_space", "Adobe RGB")
+
+        # Fast path: return from cache without opening (ctx_mgr is discarded).
         if file_hash:
             ck = PreviewCacheKey(
                 file_hash=file_hash,
@@ -185,5 +273,34 @@ class PreviewManager:
                 workspace_color_space=color_space,
                 full_resolution=full_resolution,
             )
-            self._cache.put(ck, out.copy(), (h_orig, w_orig), dict(metadata))
-        return out, (h_orig, w_orig), metadata
+            hit = self._cache.get(ck)
+            if hit is not None:
+                buf, dims, meta = hit
+                logger.debug(
+                    "preview cache hit total %.3fs for %s",
+                    time.perf_counter() - t_all,
+                    file_path,
+                )
+                # No splash on a cache hit — the linear result is already fast.
+                return None, (ensure_image(buf.copy()), dims, meta)
+
+        t_decode = time.perf_counter()
+        splash_result: Optional[Tuple[ImageBuffer, Dimensions]] = None
+        with ctx_mgr as raw:
+            if not full_resolution:
+                splash_result = self._try_splash_from_open_raw(raw, file_path)
+            linear_result = self._load_from_open_raw(
+                raw,
+                metadata,
+                file_path,
+                color_space,
+                use_camera_wb,
+                full_resolution,
+                file_hash,
+            )
+        logger.debug(
+            "PreviewManager.load_splash_and_linear %.3fs (total %.3fs)",
+            time.perf_counter() - t_decode,
+            time.perf_counter() - t_all,
+        )
+        return splash_result, linear_result
