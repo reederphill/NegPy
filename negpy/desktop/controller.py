@@ -140,6 +140,8 @@ class AppController(QObject):
         self._cursor_readout_timer.timeout.connect(self._emit_pixel_readout)
         self._pending_cursor_nx: Optional[float] = None
         self._pending_cursor_ny: Optional[float] = None
+        self._prefetch_gen = 0
+        self._preview_load_t0 = 0.0
 
         self._connect_signals()
 
@@ -224,6 +226,7 @@ class AppController(QObject):
         self.discovery_worker.error.connect(self._on_render_error)
 
         self.preview_load_requested.connect(self.preview_load_worker.process)
+        self.preview_load_worker.splash.connect(self._on_splash_preview)
         self.preview_load_worker.finished.connect(self._on_preview_loaded)
         self.preview_load_worker.error.connect(self._on_render_error)
 
@@ -294,10 +297,20 @@ class AppController(QObject):
             self.set_status("NO SUPPORTED ASSETS FOUND", 3000)
             self.status_progress_requested.emit(0, 0)
 
+    def _file_hash_for_path(self, file_path: str) -> Optional[str]:
+        if self.state.current_file_path == file_path and self.state.current_file_hash:
+            return self.state.current_file_hash
+        for f in self.state.uploaded_files:
+            if f.get("path") == file_path:
+                return f.get("hash")
+        return None
+
     def load_file(self, file_path: str, preserve_zoom: bool = False) -> None:
         """
         Dispatches RAW decode to a background worker to keep the UI thread free.
         """
+        self._prefetch_gen += 1
+        self._preview_load_t0 = time.perf_counter()
         if not preserve_zoom:
             self.zoom_requested.emit(1.0)
         self.set_status(f"Loading {os.path.basename(file_path)}...")
@@ -315,16 +328,55 @@ class AppController(QObject):
                 workspace_color_space=self.state.workspace_color_space,
                 linear_raw=self.state.config.exposure.linear_raw,
                 full_resolution=self.state.hq_preview,
+                file_hash=self._file_hash_for_path(file_path),
             )
         )
 
+    def _on_splash_preview(self, file_path: str, raw: Any, dims: Any) -> None:
+        if self.state.current_file_path != file_path:
+            return
+        self.state.preview_raw = raw
+        self.state.original_res = dims
+        self.request_render()
+
     def _on_preview_loaded(self, file_path: str, raw: Any, dims: Any, source_cs: str) -> None:
+        logger.debug(
+            "preview e2e (load request to decoded buffer) %.3fs for %s",
+            time.perf_counter() - self._preview_load_t0,
+            file_path,
+        )
         self.state.preview_raw = raw
         self.state.original_res = dims
         self.state.current_file_path = file_path
         self.state.source_cs = source_cs
         self.preview_loaded.emit()
         self.request_render()
+        self._schedule_prefetch_neighbors()
+
+    def _schedule_prefetch_neighbors(self) -> None:
+        from negpy.desktop.prefetch_logic import neighbor_paths_and_hashes
+
+        g = self._prefetch_gen
+
+        def _run() -> None:
+            if g != self._prefetch_gen:
+                return
+            idx = self.state.selected_file_idx
+            files = self.state.uploaded_files
+            for path, h in neighbor_paths_and_hashes(files, idx):
+                self.preview_load_requested.emit(
+                    PreviewLoadTask(
+                        file_path=path,
+                        workspace_color_space=self.state.workspace_color_space,
+                        use_camera_wb=self.state.config.exposure.use_camera_wb,
+                        full_resolution=self.state.hq_preview,
+                        file_hash=h,
+                        use_splash=False,
+                        for_cache_warm=True,
+                    )
+                )
+
+        QTimer.singleShot(50, _run)
 
     def toggle_hq_preview(self) -> None:
         self.session.set_hq_preview(not self.state.hq_preview)

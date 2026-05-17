@@ -1,3 +1,4 @@
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -61,6 +62,9 @@ class PreviewLoadTask:
     workspace_color_space: str
     linear_raw: bool
     full_resolution: bool = False
+    file_hash: str | None = None
+    use_splash: bool = True
+    for_cache_warm: bool = False
 
 
 class RenderWorker(QObject):
@@ -234,11 +238,12 @@ class AssetDiscoveryWorker(QObject):
 
 class PreviewLoadWorker(QObject):
     """
-    Background worker for decoding RAW files into linear preview buffers.
+    Background worker for decoding RAW files into a linear preview buffer.
     Keeps the UI thread free during slow I/O and demosaicing.
     """
 
     finished = pyqtSignal(str, object, object, str)  # (file_path, raw ndarray, dims tuple, source_cs)
+    splash = pyqtSignal(str, object, object)  # (file_path, buffer, dims) — first paint
     error = pyqtSignal(str)
 
     def __init__(self, preview_service) -> None:
@@ -247,14 +252,34 @@ class PreviewLoadWorker(QObject):
 
     @pyqtSlot(PreviewLoadTask)
     def process(self, task: PreviewLoadTask) -> None:
+        if task.for_cache_warm:
+            try:
+                self._preview_service.load_linear_preview(
+                    task.file_path,
+                    task.workspace_color_space,
+                    use_camera_wb=task.use_camera_wb,
+                    full_resolution=task.full_resolution,
+                    file_hash=task.file_hash,
+                )
+            except Exception as e:
+                logger.debug("Preview cache warm failed for %s: %s", task.file_path, e)
+            return
+        t0 = time.perf_counter()
         try:
+            if task.use_splash and not task.full_resolution:
+                sp = self._preview_service.try_splash_preview(task.file_path)
+                if sp is not None:
+                    sbuf, sdims = sp
+                    self.splash.emit(task.file_path, sbuf, sdims)
             raw, dims, metadata = self._preview_service.load_linear_preview(
                 task.file_path,
                 task.workspace_color_space,
                 linear_raw=task.linear_raw,
                 full_resolution=task.full_resolution,
+                file_hash=task.file_hash,
             )
             source_cs = metadata.get("color_space", "")
+            logger.debug("PreviewLoadWorker load %.3fs for %s", time.perf_counter() - t0, task.file_path)
             self.finished.emit(task.file_path, raw, dims, source_cs)
         except Exception as e:
             logger.exception(f"Asset load failed: {task.file_path}")
@@ -309,7 +334,9 @@ class NormalizationWorker(QObject):
                         self._preview_service.load_linear_preview,
                         f_info["path"],
                         task.workspace_color_space,
-                        linear_raw=linear_raw,
+                        False,
+                        False,
+                        f_info.get("hash"),
                     )
 
                     bounds = await asyncio.to_thread(
