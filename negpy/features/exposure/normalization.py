@@ -98,7 +98,8 @@ def analyze_log_exposure_bounds(
     if img_log is None:
         img_log = np.log10(np.clip(np.nan_to_num(image, nan=epsilon, posinf=1.0, neginf=epsilon), epsilon, 1.0))
     else:
-        assert img_log.shape == image.shape, f"img_log shape {img_log.shape} must match image shape {image.shape} — pass the full-image log"
+        if img_log.shape != image.shape:
+            raise ValueError(f"img_log shape {img_log.shape} must match image shape {image.shape} — pass the full-image log")
 
     if roi:
         y1, y2, x1, x2 = roi
