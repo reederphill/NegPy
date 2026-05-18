@@ -2,12 +2,12 @@ import hashlib
 from unittest.mock import patch
 
 from negpy.kernel.caching.logic import calculate_config_hash
-from negpy.features.exposure.models import ExposureConfig
+from negpy.domain.models import WorkspaceConfig
 
 
 def test_identical_config_does_not_rehash():
     """Calling calculate_config_hash twice with identical config should not MD5-hash twice."""
-    cfg = ExposureConfig()
+    cfg = WorkspaceConfig()  # has to_dict(), so goes through the JSON+MD5 path
 
     md5_call_count = {"n": 0}
     from negpy.kernel.caching.logic import _md5_of_serialized

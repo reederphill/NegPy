@@ -65,3 +65,19 @@ class GPUDevice:
                 self.device.poll()
             elif hasattr(self.device, "_poll"):
                 self.device._poll()
+
+    @classmethod
+    def destroy_singleton(cls) -> None:
+        """Destroy the wgpu device and reset the singleton. Call before process exit."""
+        with cls._lock:
+            inst = cls._instance
+            if inst is None:
+                return
+            try:
+                if inst.device is not None:
+                    inst.device.destroy()
+                    inst.device = None
+                inst.adapter = None
+            except Exception:
+                pass
+            cls._instance = None
