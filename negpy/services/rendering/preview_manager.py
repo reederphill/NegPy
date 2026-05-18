@@ -25,9 +25,6 @@ def _output_dimensions_from_raw(raw: Any, postprocessed_h: int, postprocessed_w:
     """
     Returns (height, width) of the full-resolution image in image space, not the half_size postprocess output.
     """
-    if isinstance(raw, NonStandardFileWrapper):
-        h, w = raw.data.shape[0], raw.data.shape[1]
-        return (int(h), int(w))
     try:
         s = raw.sizes
         for pair in (("iheight", "iwidth"), ("raw_height", "raw_width"), ("height", "width")):
@@ -112,6 +109,10 @@ class PreviewManager:
             demosaic = get_best_demosaic_algorithm(raw)
             post_kw = {}
 
+        # Read full-resolution dims before postprocess — rawpy/libraw mutates
+        # raw.sizes.iheight/iwidth when half_size=True, so reading after gives wrong dims.
+        full_dims_pre = _output_dimensions_from_raw(raw, 0, 0)
+
         user_wb = None if use_camera_wb else [1, 1, 1, 1]
 
         t_pp = time.perf_counter()
@@ -131,7 +132,11 @@ class PreviewManager:
 
         full_linear = uint16_to_float32(np.ascontiguousarray(rgb))
         h_p, w_p = full_linear.shape[:2]
-        h_orig, w_orig = _output_dimensions_from_raw(raw, h_p, w_p)
+        # Use pre-postprocess dims if valid; fall back to buffer shape (e.g. NonStandardFileWrapper).
+        if full_dims_pre[0] > 0:
+            h_orig, w_orig = full_dims_pre
+        else:
+            h_orig, w_orig = _output_dimensions_from_raw(raw, h_p, w_p)
         t_resize0 = time.perf_counter()
         max_res = APP_CONFIG.preview_render_size
         if max(h_p, w_p) > max_res and not full_resolution:
@@ -197,12 +202,9 @@ class PreviewManager:
         If color_space is None, uses the source's declared space (metadata).
         """
         t_all = time.perf_counter()
-        ctx_mgr, metadata = loader_factory.get_loader(file_path)
 
-        if color_space is None:
-            color_space = metadata.get("color_space", "Adobe RGB")
-
-        if file_hash:
+        # Fast path: skip file open entirely when all cache-key params are known upfront.
+        if file_hash and color_space is not None:
             ck = PreviewCacheKey(
                 file_hash=file_hash,
                 use_camera_wb=use_camera_wb,
@@ -211,13 +213,25 @@ class PreviewManager:
             )
             hit = self._cache.get(ck)
             if hit is not None:
-                buf, dims, meta = hit
-                logger.debug(
-                    "preview cache hit total %.3fs for %s",
-                    time.perf_counter() - t_all,
-                    file_path,
+                logger.debug("preview cache hit %.3fs for %s", time.perf_counter() - t_all, file_path)
+                return hit  # cache hit — caller must not mutate this buffer
+
+        ctx_mgr, metadata = loader_factory.get_loader(file_path)
+
+        if color_space is None:
+            color_space = metadata.get("color_space", "Adobe RGB")
+            # Re-check now that color_space is resolved from metadata.
+            if file_hash:
+                ck = PreviewCacheKey(
+                    file_hash=file_hash,
+                    use_camera_wb=use_camera_wb,
+                    workspace_color_space=color_space,
+                    full_resolution=full_resolution,
                 )
-                return buf, dims, meta  # cache hit — caller must not mutate this buffer
+                hit = self._cache.get(ck)
+                if hit is not None:
+                    logger.debug("preview cache hit %.3fs for %s", time.perf_counter() - t_all, file_path)
+                    return hit  # cache hit — caller must not mutate this buffer
 
         t_decode = time.perf_counter()
         with ctx_mgr as raw:
@@ -256,17 +270,9 @@ class PreviewManager:
         is the same type as ``load_linear_preview``.
         """
         t_all = time.perf_counter()
-        try:
-            ctx_mgr, metadata = loader_factory.get_loader(file_path)
-        except Exception as e:
-            logger.debug("preview load_splash_and_linear open failed: %s", e)
-            raise
 
-        if color_space is None:
-            color_space = metadata.get("color_space", "Adobe RGB")
-
-        # Fast path: return from cache without opening (ctx_mgr is discarded).
-        if file_hash:
+        # Fast path: skip file open entirely when all cache-key params are known upfront.
+        if file_hash and color_space is not None:
             ck = PreviewCacheKey(
                 file_hash=file_hash,
                 use_camera_wb=use_camera_wb,
@@ -275,14 +281,29 @@ class PreviewManager:
             )
             hit = self._cache.get(ck)
             if hit is not None:
-                buf, dims, meta = hit
-                logger.debug(
-                    "preview cache hit total %.3fs for %s",
-                    time.perf_counter() - t_all,
-                    file_path,
+                logger.debug("preview cache hit %.3fs for %s", time.perf_counter() - t_all, file_path)
+                return None, hit  # no splash on cache hit — linear is already fast
+
+        try:
+            ctx_mgr, metadata = loader_factory.get_loader(file_path)
+        except Exception as e:
+            logger.debug("preview load_splash_and_linear open failed: %s", e)
+            raise
+
+        if color_space is None:
+            color_space = metadata.get("color_space", "Adobe RGB")
+            # Re-check now that color_space is resolved from metadata.
+            if file_hash:
+                ck = PreviewCacheKey(
+                    file_hash=file_hash,
+                    use_camera_wb=use_camera_wb,
+                    workspace_color_space=color_space,
+                    full_resolution=full_resolution,
                 )
-                # No splash on a cache hit — the linear result is already fast.
-                return None, (buf, dims, meta)  # cache hit — caller must not mutate this buffer
+                hit = self._cache.get(ck)
+                if hit is not None:
+                    logger.debug("preview cache hit %.3fs for %s", time.perf_counter() - t_all, file_path)
+                    return None, hit  # no splash on cache hit — linear is already fast
 
         t_decode = time.perf_counter()
         splash_result: Optional[Tuple[ImageBuffer, Dimensions]] = None
