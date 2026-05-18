@@ -142,6 +142,7 @@ class AppController(QObject):
         self._pending_cursor_ny: Optional[float] = None
         self._prefetch_gen = 0
         self._preview_load_t0 = 0.0
+        self._requested_file_path: str = ""
 
         self._connect_signals()
 
@@ -311,6 +312,7 @@ class AppController(QObject):
         """
         self._prefetch_gen += 1
         self._preview_load_t0 = time.perf_counter()
+        self._requested_file_path = file_path
         if not preserve_zoom:
             self.zoom_requested.emit(1.0)
         self.set_status(f"Loading {os.path.basename(file_path)}...")
@@ -326,14 +328,14 @@ class AppController(QObject):
             PreviewLoadTask(
                 file_path=file_path,
                 workspace_color_space=self.state.workspace_color_space,
-                linear_raw=self.state.config.exposure.linear_raw,
+                use_camera_wb=not self.state.config.exposure.linear_raw,
                 full_resolution=self.state.hq_preview,
                 file_hash=self._file_hash_for_path(file_path),
             )
         )
 
     def _on_splash_preview(self, file_path: str, raw: Any, dims: Any) -> None:
-        if self.state.current_file_path != file_path:
+        if self._requested_file_path != file_path:
             return
         self.state.preview_raw = raw
         self.state.original_res = dims
@@ -368,7 +370,7 @@ class AppController(QObject):
                     PreviewLoadTask(
                         file_path=path,
                         workspace_color_space=self.state.workspace_color_space,
-                        use_camera_wb=self.state.config.exposure.use_camera_wb,
+                        use_camera_wb=not self.state.config.exposure.linear_raw,
                         full_resolution=self.state.hq_preview,
                         file_hash=h,
                         use_splash=False,

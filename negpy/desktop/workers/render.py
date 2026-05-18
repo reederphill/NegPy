@@ -60,7 +60,7 @@ class PreviewLoadTask:
 
     file_path: str
     workspace_color_space: str
-    linear_raw: bool
+    use_camera_wb: bool
     full_resolution: bool = False
     file_hash: str | None = None
     use_splash: bool = True
@@ -268,7 +268,7 @@ class PreviewLoadWorker(QObject):
         try:
             if task.use_splash and not task.full_resolution:
                 # Open the file once; get splash + linear in a single pass.
-                sp, (raw, dims, _) = self._preview_service.load_splash_and_linear(
+                sp, (raw, dims, metadata) = self._preview_service.load_splash_and_linear(
                     task.file_path,
                     task.workspace_color_space,
                     use_camera_wb=task.use_camera_wb,
@@ -278,13 +278,14 @@ class PreviewLoadWorker(QObject):
                 if sp is not None:
                     sbuf, sdims = sp
                     self.splash.emit(task.file_path, sbuf, sdims)
-            raw, dims, metadata = self._preview_service.load_linear_preview(
-                task.file_path,
-                task.workspace_color_space,
-                linear_raw=task.linear_raw,
-                full_resolution=task.full_resolution,
-                file_hash=task.file_hash,
-            )
+            else:
+                raw, dims, metadata = self._preview_service.load_linear_preview(
+                    task.file_path,
+                    task.workspace_color_space,
+                    use_camera_wb=task.use_camera_wb,
+                    full_resolution=task.full_resolution,
+                    file_hash=task.file_hash,
+                )
             source_cs = metadata.get("color_space", "")
             logger.debug("PreviewLoadWorker load %.3fs for %s", time.perf_counter() - t0, task.file_path)
             self.finished.emit(task.file_path, raw, dims, source_cs)
@@ -330,19 +331,21 @@ class NormalizationWorker(QObject):
             async with semaphore:
                 try:
                     params = self._repo.load_file_settings(f_info["hash"])
-                    linear_raw = params.exposure.linear_raw if params else False
                     analysis_buffer = params.process.analysis_buffer if params else DEFAULT_WORKSPACE_CONFIG.process.analysis_buffer
                     drange_clip = params.process.drange_clip if params else DEFAULT_WORKSPACE_CONFIG.process.drange_clip
                     process_mode = params.process.process_mode if params else DEFAULT_WORKSPACE_CONFIG.process.process_mode
                     e6_normalize = params.process.e6_normalize if params else DEFAULT_WORKSPACE_CONFIG.process.e6_normalize
 
                     # Use to_thread for blocking CPU/IO bound load and analysis
+                    # Always use flat WB (use_camera_wb=False) for normalization:
+                    # density analysis needs neutral channel values regardless of
+                    # the per-file exposure.linear_raw preference.
                     raw, _, _ = await asyncio.to_thread(
                         self._preview_service.load_linear_preview,
                         f_info["path"],
                         task.workspace_color_space,
-                        False,
-                        False,
+                        False,  # use_camera_wb
+                        False,  # full_resolution
                         f_info.get("hash"),
                     )
 
