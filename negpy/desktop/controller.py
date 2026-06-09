@@ -154,7 +154,7 @@ class AppController(QObject):
         self.canvas.zoom_changed.connect(self.zoom_changed.emit)
         self.canvas.cursor_position_changed.connect(self.on_cursor_moved)
         self.canvas.cursor_left_canvas.connect(self.on_cursor_left)
-        self.canvas.wb_region_sampled.connect(self._handle_wb_region)
+        self.canvas.overlay.wb_region_sampled.connect(self._handle_wb_region)
         self.canvas.overlay.spot_drag.connect(self._handle_spot_drag)
         self.canvas.overlay.spot_release.connect(self._handle_spot_release)
         self.canvas.overlay.spot_delete.connect(self._handle_spot_delete)

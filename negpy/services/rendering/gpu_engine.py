@@ -665,6 +665,7 @@ class GPUEngine:
                     (0, prev_tex.view),
                     (1, tex_ret.view),
                     (2, self._get_uniform_binding("retouch_u")),
+                    (3, tex_ir.view),
                 ],
                 w_rot,
                 h_rot,

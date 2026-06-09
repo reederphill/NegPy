@@ -131,6 +131,9 @@ class WorkspaceConfig:
             "dust_size": r.dust_size,
             "manual_dust_size": r.manual_dust_size,
             "manual_spots": [{"dx": s.dest_x, "dy": s.dest_y, "sx": s.source_x, "sy": s.source_y, "r": s.radius} for s in r.manual_spots],
+            "ir_dust_remove": r.ir_dust_remove,
+            "ir_threshold": r.ir_threshold,
+            "ir_inpaint_radius": r.ir_inpaint_radius,
         }
         res.update(retouch_dict)
         res.update(asdict(self.toning))

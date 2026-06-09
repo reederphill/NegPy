@@ -135,6 +135,8 @@ class CanvasOverlay(QWidget):
         self._spots = list(spots)
         self.update()
 
+    def set_uv_grid(self, uv_grid: Optional[np.ndarray]) -> None:
+        self._uv_grid = uv_grid
 
     def update_buffer(
         self,
@@ -346,6 +348,9 @@ class CanvasOverlay(QWidget):
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.setPen(pen)
             painter.drawRect(inner)
+
+        if self._spots:
+            self._draw_spots(painter)
 
         if self._tool_mode != ToolMode.NONE and visible_rect.contains(self._mouse_pos):
             if self._tool_mode == ToolMode.DUST_PICK:

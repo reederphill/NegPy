@@ -4,6 +4,7 @@ from dataclasses import replace
 
 from negpy.desktop.session import AppState, AssetListModel, DesktopSessionManager
 from negpy.domain.models import WorkspaceConfig, GeometryConfig, RetouchConfig, ProcessConfig
+from negpy.features.retouch.models import RetouchSpot
 from negpy.infrastructure.storage.repository import StorageRepository
 from negpy.kernel.system.config import APP_CONFIG
 
@@ -95,7 +96,7 @@ class TestDesktopSessionSync(unittest.TestCase):
         source_config = WorkspaceConfig(
             exposure=replace(WorkspaceConfig().exposure, density=1.5),
             geometry=GeometryConfig(rotation=1, fine_rotation=5.5, manual_crop_rect=(0.1, 0.1, 0.9, 0.9)),
-            retouch=RetouchConfig(dust_remove=True, manual_dust_spots=[(0.1, 0.1, 5)]),
+            retouch=RetouchConfig(dust_remove=True, manual_spots=[RetouchSpot(0.1, 0.1, 0.0, 0.0, 5)]),
             process=ProcessConfig(process_mode="E-6", e6_normalize=True),
         )
         self.session.state.selected_file_idx = 0
@@ -105,7 +106,7 @@ class TestDesktopSessionSync(unittest.TestCase):
         target_config = WorkspaceConfig(
             exposure=replace(WorkspaceConfig().exposure, density=0.0),
             geometry=GeometryConfig(rotation=0, fine_rotation=0.0, manual_crop_rect=None),
-            retouch=RetouchConfig(dust_remove=False, manual_dust_spots=[(0.5, 0.5, 3)]),
+            retouch=RetouchConfig(dust_remove=False, manual_spots=[RetouchSpot(0.5, 0.5, 0.0, 0.0, 3)]),
             process=ProcessConfig(process_mode="C41", e6_normalize=False),
         )
         self.mock_repo.load_file_settings.return_value = target_config
@@ -123,7 +124,7 @@ class TestDesktopSessionSync(unittest.TestCase):
         # Edits still synced
         self.assertEqual(saved_config.exposure.density, 1.5)
         # Dust spots still per-target
-        self.assertEqual(saved_config.retouch.manual_dust_spots, [(0.5, 0.5, 3)])
+        self.assertEqual(saved_config.retouch.manual_spots, [RetouchSpot(0.5, 0.5, 0.0, 0.0, 3)])
 
     def test_sync_selected_settings_geometry_only(self):
         source_config = WorkspaceConfig(

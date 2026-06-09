@@ -336,6 +336,15 @@ def apply_dust_removal(
             float(scale_factor),
         )
 
+    if do_ir and ir_buffer is not None:
+        img, _ = apply_ir_dust_removal(
+            img,
+            ir_buffer,
+            ir_threshold,
+            ir_inpaint_radius,
+            scale_factor,
+        )
+
     for spot in manual_spots:
         img = _heal_spot_laplace(np.ascontiguousarray(img.astype(np.float32)), spot, float(scale_factor))
 
