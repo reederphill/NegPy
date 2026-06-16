@@ -18,6 +18,7 @@ class ToolMode(Enum):
     CROP_MANUAL = auto()
     CROP_MOVE = auto()
     DUST_PICK = auto()
+    LOCAL_BRUSH = auto()
 
 
 @dataclass
@@ -85,6 +86,9 @@ class AppState:
 
     # True while the before/after view shows the un-graded auto baseline instead of edits
     compare_mode: bool = False
+
+    # Show painted dodge/burn mask as a tinted overlay on the canvas
+    show_local_mask: bool = False
 
 
 class AssetListModel(QAbstractListModel):
@@ -539,6 +543,8 @@ class DesktopSessionManager(QObject):
                         geometry=merged_geo,
                         retouch=merged_retouch,
                         process=merged_process,
+                        # Per-image painted masks are never synced across files.
+                        local=target_config.local,
                     )
 
                 self.repo.save_file_settings(target_hash, new_config)
@@ -629,9 +635,12 @@ class DesktopSessionManager(QObject):
         from negpy.features.retouch.models import RetouchConfig
         from negpy.features.finish.models import FinishConfig
 
+        from negpy.features.local.models import LocalAdjustmentsConfig
+
         defaults = {
             "exposure": ExposureConfig(),
             "lab": LabConfig(),
+            "local": LocalAdjustmentsConfig(),
             "toning": ToningConfig(),
             "geometry": GeometryConfig(),
             "process": ProcessConfig(),

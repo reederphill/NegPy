@@ -97,6 +97,14 @@ class ImageProcessor:
                     ir_buffer=ir_buffer,
                 )
                 context.metrics.update(gpu_metrics)
+                # Local adjustments (dodge/burn) are applied CPU-side when spots exist.
+                # readback() returns (H, W, 4) RGBA float32; drop alpha before returning
+                # so the CPU display path receives the expected 3-channel RGB array.
+                if settings.local.spots:
+                    from negpy.features.local.logic import apply_local_adjustments
+                    rgba = processed.readback()
+                    rgb = apply_local_adjustments(rgba[..., :3], settings.local)
+                    return rgb, context.metrics
                 return processed, context.metrics
             except Exception:
                 logger.exception("Hardware acceleration failed, falling back to CPU")

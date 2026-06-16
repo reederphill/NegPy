@@ -35,6 +35,7 @@ _TOOL_CURSORS: dict[ToolMode, Qt.CursorShape] = {
     ToolMode.CROP_MANUAL: Qt.CursorShape.CrossCursor,
     ToolMode.CROP_MOVE: Qt.CursorShape.OpenHandCursor,
     ToolMode.DUST_PICK: Qt.CursorShape.BlankCursor,
+    ToolMode.LOCAL_BRUSH: Qt.CursorShape.BlankCursor,
 }
 # Do not apply more than this many notch-equivalents in a single event (huge flings).
 _WHEEL_MAX_NOTCHES = 4.0

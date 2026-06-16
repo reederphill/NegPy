@@ -43,6 +43,8 @@ class CanvasOverlay(QWidget):
         self._move_uv_grid: Optional[np.ndarray] = None
         self._tool_mode: ToolMode = ToolMode.NONE
         self._mouse_pos: QPointF = QPointF()
+        self._last_local_brush_pos: Optional[Tuple[float, float]] = None
+        self._local_mask_cache: dict = {}
 
         self.zoom_level: float = 1.0
         self.pan_x: float = 0.0
@@ -90,6 +92,8 @@ class CanvasOverlay(QWidget):
             self._move_orig_rect = None
             self._move_last_emitted = None
             self._move_uv_grid = None
+        if mode != ToolMode.LOCAL_BRUSH:
+            self._last_local_brush_pos = None
         self.update()
 
     def update_buffer(
@@ -215,9 +219,15 @@ class CanvasOverlay(QWidget):
             painter.setPen(pen)
             painter.drawRect(inner)
 
+        in_local = self._tool_mode == ToolMode.LOCAL_BRUSH
+        if getattr(self.state, "show_local_mask", False):
+            self._draw_local_mask_overlay(painter)
+
         if self._tool_mode != ToolMode.NONE and visible_rect.contains(self._mouse_pos):
             if self._tool_mode == ToolMode.DUST_PICK:
                 self._draw_brush(painter)
+            elif in_local:
+                self._draw_local_brush(painter)
             else:
                 pen = QPen(QColor(255, 255, 255, 80), 1, Qt.PenStyle.DotLine)
                 pen.setCosmetic(True)
@@ -253,6 +263,75 @@ class CanvasOverlay(QWidget):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawEllipse(self._mouse_pos, radius, radius)
 
+    def _local_brush_radius_normalized(self) -> float:
+        img_w, img_h = self.state.original_res
+        short_side = float(min(img_w, img_h)) if img_w > 0 and img_h > 0 else 1000.0
+        return self.state.config.local.brush_size / short_side
+
+    def _local_brush_screen_radius(self) -> float:
+        return self._local_brush_radius_normalized() * min(self._view_rect.width(), self._view_rect.height())
+
+    def _draw_local_brush(self, painter: QPainter) -> None:
+        radius = self._local_brush_screen_radius()
+        strength = self.state.config.local.strength
+        # Yellow for positive (dodge), blue for negative (burn)
+        outline_color = QColor(232, 200, 74) if strength >= 0 else QColor(74, 143, 232)
+        fill_color = QColor(outline_color)
+        fill_color.setAlpha(40)
+        painter.setBrush(fill_color)
+        pen = QPen(outline_color, 1.5, Qt.PenStyle.SolidLine)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        painter.drawEllipse(self._mouse_pos, radius, radius)
+
+    def _build_ev_qimage(self, spots) -> Optional["QImage"]:
+        """Render the EV map for *spots* as a dual-colour RGBA QImage at view resolution."""
+        if not spots or self._view_rect.isEmpty():
+            return None
+
+        vw = max(4, int(self._view_rect.width()))
+        vh = max(4, int(self._view_rect.height()))
+        n = len(spots)
+        tail = spots[-1] if n else ()
+        cache_key = (n, tail, vw, vh)
+        cached = self._local_mask_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        from negpy.features.local.logic import build_ev_map
+
+        ev = build_ev_map(list(spots), vh, vw)  # float32, unbounded
+
+        rgba = np.zeros((vh, vw, 4), dtype=np.uint8)
+        pos = ev > 0
+        neg = ev < 0
+        # Dodge: yellow
+        rgba[pos, 0] = 232
+        rgba[pos, 1] = 200
+        rgba[pos, 2] = 74
+        rgba[pos, 3] = np.clip(ev[pos] * 140, 0, 200).astype(np.uint8)
+        # Burn: blue
+        rgba[neg, 0] = 74
+        rgba[neg, 1] = 143
+        rgba[neg, 2] = 232
+        rgba[neg, 3] = np.clip(-ev[neg] * 140, 0, 200).astype(np.uint8)
+
+        rgba = np.ascontiguousarray(rgba)
+        img = QImage(rgba.data, vw, vh, vw * 4, QImage.Format.Format_RGBA8888).copy()
+
+        if len(self._local_mask_cache) > 6:
+            self._local_mask_cache.clear()
+        self._local_mask_cache[cache_key] = img
+        return img
+
+    def _draw_local_mask_overlay(self, painter: QPainter) -> None:
+        """Draw the accumulated EV map as a tinted overlay (yellow=dodge, blue=burn)."""
+        if self._view_rect.isEmpty():
+            return
+        ev_img = self._build_ev_qimage(self.state.config.local.spots)
+        if ev_img is not None:
+            painter.drawImage(self._view_rect, ev_img)
+
     def _map_to_image_coords(self, screen_pos: QPointF) -> Optional[Tuple[float, float]]:
         if self._view_rect.isEmpty() or not self._view_rect.contains(screen_pos):
             return None
@@ -282,6 +361,9 @@ class CanvasOverlay(QWidget):
         coords = self._map_to_image_coords(event.position())
         if coords:
             self.clicked.emit(*coords)
+            if self._tool_mode == ToolMode.LOCAL_BRUSH:
+                self._last_local_brush_pos = coords
+                self._local_mask_cache.clear()
             if self._tool_mode == ToolMode.CROP_MANUAL:
                 self._crop_active = True
                 px = np.clip(event.position().x(), self._view_rect.left(), self._view_rect.right())
@@ -309,6 +391,19 @@ class CanvasOverlay(QWidget):
         coords = self._map_to_image_coords(event.position())
         if coords is not None:
             self.cursor_moved.emit(*coords)
+            # Drag-to-paint: throttle to one spot per half-brush-width of travel
+            if (
+                event.buttons() & Qt.MouseButton.LeftButton
+                and self._tool_mode == ToolMode.LOCAL_BRUSH
+            ):
+                last = self._last_local_brush_pos
+                threshold = self._local_brush_radius_normalized() * 0.25
+                if last is None or (
+                    (coords[0] - last[0]) ** 2 + (coords[1] - last[1]) ** 2 >= threshold ** 2
+                ):
+                    self._last_local_brush_pos = coords
+                    self._local_mask_cache.clear()
+                    self.clicked.emit(*coords)
         else:
             self.cursor_left.emit()
 

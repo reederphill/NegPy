@@ -13,6 +13,7 @@ from negpy.features.exposure.processor import (
 )
 from negpy.features.toning.processor import ToningProcessor
 from negpy.features.lab.processor import PhotoLabProcessor
+from negpy.features.local.processor import LocalProcessor
 from negpy.features.retouch.processor import RetouchProcessor
 from negpy.features.finish.processor import FinishProcessor
 from negpy.kernel.system.config import APP_CONFIG
@@ -142,6 +143,7 @@ class DarkroomEngine:
 
         current_img, pipeline_changed = self._run_stage(current_img, settings.lab, "lab", run_lab, context, pipeline_changed)
 
+        current_img = LocalProcessor(settings.local).process(current_img, context)
         current_img = ToningProcessor(settings.toning).process(current_img, context)
         current_img = CropProcessor(settings.geometry).process(current_img, context)
         current_img = FinishProcessor(settings.finish).process(current_img, context)

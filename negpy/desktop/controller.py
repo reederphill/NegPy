@@ -55,10 +55,13 @@ def baseline_compare_config(config: WorkspaceConfig) -> WorkspaceConfig:
     while keeping process (mode + normalization bounds), geometry/crop, export and metadata,
     so it shows the un-graded auto conversion of the same framed image.
     """
+    from negpy.features.local.models import LocalAdjustmentsConfig
+
     return replace(
         config,
         exposure=ExposureConfig(),
         lab=LabConfig(),
+        local=LocalAdjustmentsConfig(),
         toning=ToningConfig(),
         finish=FinishConfig(),
         retouch=RetouchConfig(),
@@ -457,6 +460,8 @@ class AppController(QObject):
             self._handle_wb_pick(nx, ny)
         elif self.state.active_tool == ToolMode.DUST_PICK:
             self._handle_dust_pick(nx, ny)
+        elif self.state.active_tool == ToolMode.LOCAL_BRUSH:
+            self._handle_local_brush(nx, ny)
 
     def set_active_tool(self, mode: ToolMode) -> None:
         self.state.active_tool = mode
@@ -604,6 +609,26 @@ class AppController(QObject):
                 retouch=replace(self.state.config.retouch, manual_dust_spots=new_spots),
             )
         )
+        self.request_render()
+
+    def _brush_radius_normalized(self) -> float:
+        """Convert brush_size (pixels) to a fraction of the shorter image dimension."""
+        img_w, img_h = self.state.original_res
+        short_side = float(min(img_w, img_h)) if img_w > 0 and img_h > 0 else 1000.0
+        return self.state.config.local.brush_size / short_side
+
+    def _handle_local_brush(self, nx: float, ny: float) -> None:
+        """Append a brush spot at viewport-normalised (nx, ny) with the current strength."""
+        local = self.state.config.local
+        spot = (nx, ny, self._brush_radius_normalized(), local.strength)
+        new_local = replace(local, spots=local.spots + [spot])
+        self.session.update_config(replace(self.state.config, local=new_local))
+        self.request_render()
+
+    def clear_local(self) -> None:
+        """Remove all local adjustment spots."""
+        new_local = replace(self.state.config.local, spots=[])
+        self.session.update_config(replace(self.state.config, local=new_local), persist=True)
         self.request_render()
 
     def _handle_wb_pick(self, nx: float, ny: float) -> None:

@@ -7,6 +7,7 @@ from negpy.features.process.models import ProcessConfig
 from negpy.features.exposure.models import ExposureConfig
 from negpy.features.geometry.models import GeometryConfig
 from negpy.features.lab.models import LabConfig
+from negpy.features.local.models import LocalAdjustmentsConfig
 from negpy.features.retouch.models import RetouchConfig
 from negpy.features.toning.models import ToningConfig
 from negpy.features.finish.models import FinishConfig
@@ -106,6 +107,7 @@ class WorkspaceConfig:
     exposure: ExposureConfig = field(default_factory=ExposureConfig)
     geometry: GeometryConfig = field(default_factory=GeometryConfig)
     lab: LabConfig = field(default_factory=LabConfig)
+    local: LocalAdjustmentsConfig = field(default_factory=LocalAdjustmentsConfig)
     retouch: RetouchConfig = field(default_factory=RetouchConfig)
     toning: ToningConfig = field(default_factory=ToningConfig)
     finish: FinishConfig = field(default_factory=FinishConfig)
@@ -126,6 +128,8 @@ class WorkspaceConfig:
         res.update(asdict(self.finish))
         res.update(asdict(self.metadata))
         res.update(asdict(self.export))
+        # Local adjustments stored as a nested dict (variable-length spot lists).
+        res["local_adjustments"] = asdict(self.local)
         return res
 
     @classmethod
@@ -145,6 +149,9 @@ class WorkspaceConfig:
             )
         else:
             data.pop("use_original_res", None)
+
+        # Extract local_adjustments before building flat-key valid_keys set.
+        local_data = data.pop("local_adjustments", {})
 
         config_classes = [
             ProcessConfig,
@@ -169,11 +176,25 @@ class WorkspaceConfig:
             valid = config_cls.__dataclass_fields__.keys()
             return {k: v for k, v in d.items() if k in valid}
 
+        def _build_local(d: Dict[str, Any]) -> LocalAdjustmentsConfig:
+            if not d:
+                return LocalAdjustmentsConfig()
+            valid = LocalAdjustmentsConfig.__dataclass_fields__.keys()
+            filtered = {k: v for k, v in d.items() if k in valid}
+            # JSON deserialises lists of lists; convert to list of tuples.
+            if "spots" in filtered:
+                filtered["spots"] = [tuple(s) for s in filtered["spots"]]
+            # Old saves stored brush_size as a normalized fraction (< 1.0); reset to default.
+            if filtered.get("brush_size", 20.0) < 1.0:
+                filtered.pop("brush_size", None)
+            return LocalAdjustmentsConfig(**filtered)
+
         return cls(
             process=ProcessConfig(**filter_keys(ProcessConfig, data)),
             exposure=ExposureConfig(**filter_keys(ExposureConfig, data)),
             geometry=GeometryConfig(**filter_keys(GeometryConfig, data)),
             lab=LabConfig(**filter_keys(LabConfig, data)),
+            local=_build_local(local_data),
             retouch=RetouchConfig(**filter_keys(RetouchConfig, data)),
             toning=ToningConfig(**filter_keys(ToningConfig, data)),
             finish=FinishConfig(**filter_keys(FinishConfig, data)),
