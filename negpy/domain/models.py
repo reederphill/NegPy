@@ -251,9 +251,7 @@ class WorkspaceConfig:
             data.pop("use_original_res", None)
 
         if "same_as_source" in data and "output_mode" not in data:
-            data["output_mode"] = (
-                ExportPresetOutputMode.SAME_AS_SOURCE if data.pop("same_as_source") else ExportPresetOutputMode.ABSOLUTE
-            )
+            data["output_mode"] = ExportPresetOutputMode.SAME_AS_SOURCE if data.pop("same_as_source") else ExportPresetOutputMode.ABSOLUTE
         else:
             data.pop("same_as_source", None)
 

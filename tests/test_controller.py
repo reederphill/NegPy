@@ -264,7 +264,99 @@ class TestBatchExportFiltering(unittest.TestCase):
         self.controller.request_batch_export(override_settings=True)
         tasks = self._captured_tasks()
         for t in tasks:
-            self.assertEqual(t.params.export.export_path, "/tmp/out")
+            self.assertEqual(t.export_settings.output_path, "/tmp/out")
+
+
+class TestUnifiedExportItems(unittest.TestCase):
+    """Quick Export (the bare Format/Size/Color/Destination settings) and saved
+    presets are unified into one set of per-file export items."""
+
+    def setUp(self):
+        self.mock_session_manager = MagicMock(spec=DesktopSessionManager)
+        self.mock_session_manager.state = AppState()
+        self.mock_session_manager.repo = MagicMock()
+        self.mock_session_manager.repo.load_file_settings.return_value = None
+
+        self.mock_session_manager.state.uploaded_files = [
+            {"name": "IMG_0001.cr2", "path": "/tmp/IMG_0001.cr2", "hash": "h1"},
+        ]
+        self.mock_session_manager.state.current_file_path = "/tmp/IMG_0001.cr2"
+        self.mock_session_manager.state.current_file_hash = "h1"
+
+        self.visible_indices = [0]
+        self.mock_session_manager.asset_model = MagicMock()
+        self.mock_session_manager.asset_model.visible_actual_indices_ordered.side_effect = lambda: list(self.visible_indices)
+
+        with (
+            patch("negpy.desktop.controller.RenderWorker") as mock_rw_class,
+            patch("negpy.desktop.controller.PreviewManager") as mock_pm_class,
+        ):
+            mock_rw_class.return_value = MagicMock()
+            mock_pm_class.return_value = MagicMock(spec=PreviewManager)
+            mock_pm_class.return_value.load_linear_preview.return_value = (None, (0, 0), {})
+            self.controller = AppController(self.mock_session_manager)
+
+        self.controller._ensure_valid_export_path = MagicMock(return_value="/tmp/out")
+        self.controller._run_export_tasks = MagicMock()
+
+        from negpy.domain.models import ExportPreset
+
+        self.controller.state.export_presets = [
+            ExportPreset(name="Web sRGB", enabled=True),
+            ExportPreset(name="Disabled preset", enabled=False),
+        ]
+
+    def tearDown(self):
+        import gc
+
+        for thread in [
+            self.controller.render_thread,
+            self.controller.export_thread,
+            self.controller.thumb_thread,
+            self.controller.norm_thread,
+            self.controller.discovery_thread,
+            self.controller.preview_load_thread,
+            self.controller.scan_thread,
+        ]:
+            if thread is not None and thread.isRunning():
+                thread.quit()
+                thread.wait()
+        del self.controller
+        gc.collect()
+
+    def _captured_tasks(self):
+        self.controller._run_export_tasks.assert_called_once()
+        return self.controller._run_export_tasks.call_args.args[0]
+
+    def test_export_current_runs_quick_and_enabled_presets(self):
+        self.controller.request_export()
+        tasks = self._captured_tasks()
+        self.assertEqual([t.export_settings.name for t in tasks], ["Quick Export", "Web sRGB"])
+
+    def test_export_current_skips_quick_when_disabled(self):
+        self.controller.state.quick_export_enabled = False
+        self.controller.request_export()
+        tasks = self._captured_tasks()
+        self.assertEqual([t.export_settings.name for t in tasks], ["Web sRGB"])
+
+    def test_export_current_no_items_shows_message_and_skips(self):
+        self.controller.state.quick_export_enabled = False
+        self.controller.state.export_presets = []
+        with patch("negpy.desktop.controller.QMessageBox") as mock_box:
+            self.controller.request_export()
+        mock_box.information.assert_called_once()
+        self.controller._run_export_tasks.assert_not_called()
+
+    def test_batch_export_runs_quick_and_enabled_presets_per_file(self):
+        self.controller.request_batch_export()
+        tasks = self._captured_tasks()
+        self.assertEqual([t.export_settings.name for t in tasks], ["Quick Export", "Web sRGB"])
+
+    def test_batch_export_quick_disabled_runs_presets_only(self):
+        self.controller.state.quick_export_enabled = False
+        self.controller.request_batch_export()
+        tasks = self._captured_tasks()
+        self.assertEqual([t.export_settings.name for t in tasks], ["Web sRGB"])
 
 
 class TestBatchAnalysisFiltering(unittest.TestCase):

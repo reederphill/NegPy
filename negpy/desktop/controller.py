@@ -958,6 +958,11 @@ class AppController(QObject):
         self.session.save_icc_prefs()
         self.request_render()
 
+    def set_quick_export_enabled(self, enabled: bool) -> None:
+        """Toggle whether Quick Export (the Format/Size/Color/Destination settings
+        shown in the Export panel) runs alongside enabled presets on export."""
+        self.session.set_quick_export_enabled(enabled)
+
     def _apply_monitor_profile(self) -> None:
         """Resolve the effective display profile (override else detected), push it to
         every preview path, and re-render. Display-only; export is unaffected."""
@@ -1057,6 +1062,17 @@ class AppController(QObject):
     def _enabled_presets(self) -> List[ExportPreset]:
         return [p for p in self.state.export_presets if p.enabled]
 
+    def _active_export_items(self, quick_conf: Optional[Any]) -> List[ExportPreset]:
+        """Quick Export (the current Format/Size/Color/Destination settings, as an
+        ephemeral preset) plus every enabled saved preset — the unified set of
+        files 'Export'/'Export All' produce per source file. `quick_conf` is the
+        resolved ExportConfig to use, or None to skip Quick Export entirely."""
+        items: List[ExportPreset] = []
+        if self.state.quick_export_enabled and quick_conf is not None:
+            items.append(preset_from_export_config(quick_conf, name="Quick Export"))
+        items.extend(self._enabled_presets())
+        return items
+
     def _validate_preset_paths(self, presets: List[ExportPreset]) -> bool:
         """Returns True if all absolute-path presets have a valid directory configured."""
         from PyQt6.QtWidgets import QFileDialog
@@ -1119,7 +1135,7 @@ class AppController(QObject):
         return export_path
 
     def request_export(self) -> None:
-        """Exports the current file using the settings currently shown in the Export panel."""
+        """Exports the current file: Quick Export (if enabled) plus every enabled preset."""
         if not self.state.current_file_path:
             return
 
@@ -1127,31 +1143,34 @@ class AppController(QObject):
         if not export_path:
             return
 
-        export_conf = replace(
+        quick_conf = replace(
             self.state.config.export,
             export_path=export_path,
             icc_input_path=self.state.icc_input_path,
             icc_output_path=self.state.icc_output_path,
         )
-        source_exif = self.state.source_exif.get(self.state.current_file_hash or "")
+        items = self._active_export_items(quick_conf)
+        if not items:
+            QMessageBox.information(None, "Nothing to export", "Enable Quick Export or at least one preset in the Export panel.")
+            return
+        if not self._validate_preset_paths(items):
+            return
 
-        self._run_export_tasks(
-            [
-                ExportTask(
-                    file_info={
-                        "name": os.path.basename(self.state.current_file_path),
-                        "path": self.state.current_file_path,
-                        "hash": self.state.current_file_hash,
-                    },
-                    params=self.state.config,
-                    export_settings=preset_from_export_config(export_conf),
-                    gpu_enabled=self.state.gpu_enabled,
-                    source_exif=source_exif,
-                    metadata_config=self.state.config.metadata,
-                    working_color_space=self.state.workspace_color_space,
-                )
-            ]
+        source_exif = self.state.source_exif.get(self.state.current_file_hash or "")
+        file_info = {
+            "name": os.path.basename(self.state.current_file_path),
+            "path": self.state.current_file_path,
+            "hash": self.state.current_file_hash,
+        }
+        tasks = self._tasks_for_file(
+            file_info,
+            self.state.config,
+            items,
+            source_exif=source_exif,
+            metadata_config=self.state.config.metadata,
         )
+        if tasks:
+            self._run_export_tasks(tasks)
 
     def request_export_selected(self) -> None:
         """Batch-exports the currently selected files using each file's own saved settings."""
@@ -1159,7 +1178,8 @@ class AppController(QObject):
         self.request_batch_export(files=selected)
 
     def request_batch_export(self, override_settings: bool = False, files: list[dict] | None = None) -> None:
-        """Batch-exports the given files (all visible by default) using current settings, optionally applied to all."""
+        """Batch-exports the given files (all visible by default): Quick Export (if
+        enabled, optionally synced from the current settings) plus every enabled preset."""
         export_path = self._ensure_valid_export_path()
         if not export_path:
             return
@@ -1172,88 +1192,25 @@ class AppController(QObject):
         if files is None:
             files = [self.state.uploaded_files[i] for i in self.session.asset_model.visible_actual_indices_ordered()]
 
+        presets = self._enabled_presets()
+        if not self.state.quick_export_enabled and not presets:
+            QMessageBox.information(None, "Nothing to export", "Enable Quick Export or at least one preset in the Export panel.")
+            return
+        if not self._validate_preset_paths(presets):
+            return
+
         tasks = []
         for f in files:
             params = self.session.repo.load_file_settings(f["hash"]) or self.state.config
 
-            if override_settings:
-                params = replace(params, export=current_export)
+            quick_conf = None
+            if self.state.quick_export_enabled:
+                base = current_export if override_settings else params.export
+                quick_conf = replace(base, icc_input_path=icc_input, icc_output_path=icc_output)
 
-            final_export = replace(
-                params.export,
-                icc_input_path=icc_input,
-                icc_output_path=icc_output,
-            )
-
-            bounds_override = None
-            if f["hash"] == self.state.current_file_hash:
-                with self.state.metrics_lock:
-                    bounds_override = self.state.last_metrics.get("log_bounds")
-
-            source_exif = self.state.source_exif.get(f["hash"])
-            metadata_config = self.state.config.metadata if sync_metadata else params.metadata
-
-            tasks.append(
-                ExportTask(
-                    file_info=f,
-                    params=params,
-                    export_settings=preset_from_export_config(final_export),
-                    gpu_enabled=self.state.gpu_enabled,
-                    bounds_override=bounds_override,
-                    source_exif=source_exif,
-                    metadata_config=metadata_config,
-                    working_color_space=self.state.workspace_color_space,
-                )
-            )
-
-        if tasks:
-            self._run_export_tasks(tasks)
-
-    def request_preset_export(self) -> None:
-        """Initiates high-resolution export for the current file using enabled presets."""
-        if not self.state.current_file_path:
-            return
-
-        presets = self._enabled_presets()
-        if not presets:
-            QMessageBox.information(None, "No presets enabled", "Enable at least one export preset in the Export panel.")
-            return
-
-        if not self._validate_preset_paths(presets):
-            return
-
-        source_exif = self.state.source_exif.get(self.state.current_file_hash or "")
-        file_info = {
-            "name": os.path.basename(self.state.current_file_path),
-            "path": self.state.current_file_path,
-            "hash": self.state.current_file_hash,
-        }
-        tasks = self._tasks_for_file(
-            file_info,
-            self.state.config,
-            presets,
-            source_exif=source_exif,
-            metadata_config=self.state.config.metadata,
-        )
-        if tasks:
-            self._run_export_tasks(tasks)
-
-    def request_preset_batch_export(self) -> None:
-        """Initiates batch export for all visible files using enabled presets."""
-        presets = self._enabled_presets()
-        if not presets:
-            QMessageBox.information(None, "No presets enabled", "Enable at least one export preset in the Export panel.")
-            return
-
-        if not self._validate_preset_paths(presets):
-            return
-
-        sync_metadata = self.state.config.metadata.sync_to_batch
-        visible_files = [self.state.uploaded_files[i] for i in self.session.asset_model.visible_actual_indices_ordered()]
-
-        tasks = []
-        for f in visible_files:
-            params = self.session.repo.load_file_settings(f["hash"]) or self.state.config
+            items = self._active_export_items(quick_conf)
+            if not items:
+                continue
 
             bounds_override = None
             if f["hash"] == self.state.current_file_hash:
@@ -1267,7 +1224,7 @@ class AppController(QObject):
                 self._tasks_for_file(
                     f,
                     params,
-                    presets,
+                    items,
                     bounds_override=bounds_override,
                     source_exif=source_exif,
                     metadata_config=metadata_config,

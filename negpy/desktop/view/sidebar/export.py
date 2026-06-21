@@ -56,7 +56,7 @@ class ExportSidebar(BaseSidebar):
         self.controller.monitor_profile_changed.connect(self._refresh_display_info)
 
         self.manage_presets_btn.clicked.connect(self._open_presets_dialog)
-        self.export_presets_btn.clicked.connect(self.controller.request_preset_export)
+        self.quick_export_checkbox.toggled.connect(self.controller.set_quick_export_enabled)
 
         self.apply_all_btn.toggled.connect(self._update_apply_all_style)
         self.batch_export_btn.clicked.connect(
@@ -67,11 +67,28 @@ class ExportSidebar(BaseSidebar):
     # --- Presets -------------------------------------------------------------
 
     def _add_presets_section(self) -> None:
-        """Collapsible PRESETS section pinned to the top of the panel."""
+        """Collapsible EXPORT ITEMS section: the checklist of everything Export /
+        Export All will produce — Quick Export (the Format/Size/Color/Destination
+        settings below) pinned at top, plus saved presets."""
         content = QWidget()
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(6)
+
+        # Quick Export: pinned, non-removable row backed by the Format/Size/Color/
+        # Destination rows below (not a saved preset). Unchecking it means only
+        # presets are exported.
+        quick_row = QHBoxLayout()
+        self.quick_export_checkbox = QCheckBox("Quick Export (settings below)")
+        self.quick_export_checkbox.setToolTip(
+            "Export using the Format/Size/Color/Destination settings shown below, in addition to any enabled presets"
+        )
+        quick_row.addWidget(self.quick_export_checkbox)
+        content_layout.addLayout(quick_row)
+
+        presets_label = QLabel("SAVED PRESETS")
+        presets_label.setStyleSheet(f"color: {THEME.text_muted}; font-size: 10px; font-weight: bold; letter-spacing: 1px;")
+        content_layout.addWidget(presets_label)
 
         self._presets_scroll = QScrollArea()
         self._presets_scroll.setWidgetResizable(True)
@@ -93,20 +110,15 @@ class ExportSidebar(BaseSidebar):
         self._preset_checkboxes: list[QCheckBox] = []
 
         preset_btn_row = QHBoxLayout()
-        self.manage_presets_btn = QPushButton(" Manage")
+        self.manage_presets_btn = QPushButton(" Manage presets")
         self.manage_presets_btn.setObjectName("manage_presets_btn")
         self.manage_presets_btn.setIcon(qta.icon("fa5s.sliders-h", color=THEME.text_primary))
-        self.export_presets_btn = QPushButton(" Export Presets")
-        self.export_presets_btn.setObjectName("export_presets_btn")
-        self.export_presets_btn.setIcon(qta.icon("fa5s.layer-group", color=THEME.text_primary))
-        self.export_presets_btn.setToolTip("Export the current file with every enabled preset")
         preset_btn_row.addWidget(self.manage_presets_btn)
-        preset_btn_row.addWidget(self.export_presets_btn)
         content_layout.addLayout(preset_btn_row)
 
         repo = self.controller.session.repo
         expanded = bool(repo.get_global_setting("section_expanded_export_presets", default=True))
-        section = CollapsibleSection("Presets", expanded=expanded, icon=qta.icon("fa5s.layer-group", color="#aaa"))
+        section = CollapsibleSection("Export Items", expanded=expanded, icon=qta.icon("fa5s.layer-group", color="#aaa"))
         section.set_content(content)
         section.expanded_changed.connect(lambda checked: repo.save_global_setting("section_expanded_export_presets", checked))
         self.layout.addWidget(section)
@@ -199,7 +211,10 @@ class ExportSidebar(BaseSidebar):
         self.apply_all_btn.setFixedHeight(40)
         self.apply_all_btn.setCheckable(True)
         self.apply_all_btn.setChecked(True)
-        self.apply_all_btn.setToolTip("Apply current export settings (Size, DPI, Border) to all files")
+        self.apply_all_btn.setToolTip(
+            "Apply the current Quick Export settings (Size, DPI, Border, etc.) to every file "
+            "instead of each file's own. Enabled presets always run as saved."
+        )
         self._update_apply_all_style(True)
         self.layout.addWidget(self.apply_all_btn)
 
@@ -207,6 +222,7 @@ class ExportSidebar(BaseSidebar):
         self.batch_export_btn.setObjectName("batch_export_btn")
         self.batch_export_btn.setFixedHeight(40)
         self.batch_export_btn.setIcon(qta.icon("fa5s.images", color=THEME.text_primary))
+        self.batch_export_btn.setToolTip("Export every visible file using Quick Export (if enabled) and every enabled preset")
         self.layout.addWidget(self.batch_export_btn)
 
     def _rebuild_preset_rows(self) -> None:
@@ -335,6 +351,7 @@ class ExportSidebar(BaseSidebar):
         self.block_signals(True)
         try:
             self.form.load(self._config_to_form_values())
+            self.quick_export_checkbox.setChecked(self.state.quick_export_enabled)
             self.soft_proof_checkbox.setChecked(self.state.soft_proof_enabled)
             override = self.state.monitor_profile_override
             self.display_combo.setCurrentText(override if override in self.display_spaces else "As detected")
@@ -350,6 +367,7 @@ class ExportSidebar(BaseSidebar):
 
     def block_signals(self, blocked: bool) -> None:
         widgets = [
+            self.quick_export_checkbox,
             self.soft_proof_checkbox,
             self.display_combo,
             self.cs_cell_px_input,

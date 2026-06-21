@@ -88,6 +88,9 @@ class AppState:
 
     # Export presets (globally managed, not per-file)
     export_presets: List[ExportPreset] = field(default_factory=list)
+    # Whether the current Format/Size/Color/Destination settings ("Quick Export")
+    # run alongside enabled presets when exporting. Off = only presets run.
+    quick_export_enabled: bool = True
 
 
 class AssetListModel(QAbstractListModel):
@@ -270,6 +273,9 @@ class DesktopSessionManager(QObject):
         saved_soft_proof = self.repo.get_global_setting("soft_proof_enabled")
         if saved_soft_proof is not None:
             self.state.soft_proof_enabled = bool(saved_soft_proof)
+        saved_quick_export = self.repo.get_global_setting("quick_export_enabled")
+        if saved_quick_export is not None:
+            self.state.quick_export_enabled = bool(saved_quick_export)
 
         self.state.export_presets = self.repo.load_export_presets()
 
@@ -299,6 +305,12 @@ class DesktopSessionManager(QObject):
         if self.state.canvas_bg_index != index:
             self.state.canvas_bg_index = index
             self.repo.save_global_setting("canvas_bg_index", index)
+
+    def set_quick_export_enabled(self, enabled: bool) -> None:
+        """Updates and persists whether Quick Export runs alongside presets."""
+        if self.state.quick_export_enabled != enabled:
+            self.state.quick_export_enabled = enabled
+            self.repo.save_global_setting("quick_export_enabled", enabled)
 
     def save_icc_prefs(self) -> None:
         """Persists current ICC profile settings."""
